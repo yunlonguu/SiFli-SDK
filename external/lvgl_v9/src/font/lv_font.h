@@ -337,11 +337,11 @@ LV_FONT_DECLARE(lv_font_unscii_8)
 LV_FONT_DECLARE(lv_font_unscii_16)
 #endif
 
-#if LV_FONT_SIMYOU_30_CH
+#if defined(LV_FONT_SIMYOU_30_CH) && LV_FONT_SIMYOU_30_CH
 LV_FONT_DECLARE(lv_font_simyou_30_ch)
 #endif
 
-#if LV_FONT_TINY_TTF_UBUNTU
+#if defined(LV_FONT_TINY_TTF_UBUNTU) && LV_FONT_TINY_TTF_UBUNTU
 LV_FONT_DECLARE(*lv_font_ubuntu_12)
 LV_FONT_DECLARE(*lv_font_ubuntu_14)
 LV_FONT_DECLARE(*lv_font_ubuntu_16)
