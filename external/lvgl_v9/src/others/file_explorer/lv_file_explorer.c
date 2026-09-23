@@ -90,7 +90,6 @@ lv_obj_t * lv_file_explorer_create(lv_obj_t * parent)
 #if LV_FILE_EXPLORER_QUICK_ACCESS
 void lv_file_explorer_set_quick_access_path(lv_obj_t * obj, lv_file_explorer_dir_t dir, const char * path)
 {
-    rt_kprintf("LV_FILE_EXPLORER_QUICK_ACCESS\n");
     LV_ASSERT_OBJ(obj, MY_CLASS);
 
     lv_file_explorer_t * explorer = (lv_file_explorer_t *)obj;
@@ -132,7 +131,6 @@ void lv_file_explorer_set_quick_access_path(lv_obj_t * obj, lv_file_explorer_dir
 
     /*Allocate space for the new text*/
     *dir_str = lv_strdup(path);
-    rt_kprintf("LV_USE_FILE_EXPLORER_done\n");
 }
 
 #endif
