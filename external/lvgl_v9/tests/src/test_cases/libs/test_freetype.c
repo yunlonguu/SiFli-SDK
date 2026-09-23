@@ -403,13 +403,11 @@ void tearDown(void)
 
 static void test_freetype_with_render_mode(lv_freetype_font_render_mode_t render_mode, const char * screenshot_name)
 {
-    fprintf(stderr, "[DBG] A enter with_render_mode\n");
     /*Create a font*/
     lv_font_t * font_italic = lv_freetype_font_create("./src/test_files/fonts/noto/NotoSansSC-Regular.ttf",
                                                       render_mode,
                                                       24,
                                                       LV_FREETYPE_FONT_STYLE_ITALIC);
-    fprintf(stderr, "[DBG] italic=%p\n", (void *)font_italic);
     TEST_ASSERT_NOT_NULL(font_italic);
     lv_font_t * font_normal = lv_freetype_font_create("./src/test_files/fonts/noto/NotoSansSC-Regular.ttf",
                                                       render_mode,
@@ -420,7 +418,6 @@ static void test_freetype_with_render_mode(lv_freetype_font_render_mode_t render
                                                             render_mode,
                                                             12,
                                                             LV_FREETYPE_FONT_STYLE_NORMAL);
-    fprintf(stderr, "[DBG] normal_small=%p\n", (void *)font_normal_small);
     TEST_ASSERT_NOT_NULL(font_normal_small);
 
     /* Emoji is only supported in bitmap mode */
@@ -428,7 +425,6 @@ static void test_freetype_with_render_mode(lv_freetype_font_render_mode_t render
                                                      LV_FREETYPE_FONT_RENDER_MODE_BITMAP,
                                                      12,
                                                      LV_FREETYPE_FONT_STYLE_NORMAL);
-    fprintf(stderr, "[DBG] emoji=%p\n", (void *)font_emoji);
     TEST_ASSERT_NOT_NULL(font_emoji);
 
     lv_font_t * font_path_error = lv_freetype_font_create("ERROR_PATH", render_mode, 24,
@@ -496,24 +492,17 @@ static void test_freetype_with_render_mode(lv_freetype_font_render_mode_t render
     lv_label_set_text(label_emoji, "FreeType Emoji test: 😀");
     lv_obj_align_to(label_emoji, label2, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
 
-    fprintf(stderr, "[DBG] before screenshot\n");
     TEST_ASSERT_EQUAL_SCREENSHOT(screenshot_name);
-    fprintf(stderr, "[DBG] B screenshot passed\n");
 
     lv_obj_clean(lv_screen_active());
-    fprintf(stderr, "[DBG] C obj_clean done\n");
     lv_style_reset(&style_italic);
     lv_style_reset(&style_normal);
     lv_style_reset(&style_normal_small);
     lv_style_reset(&style_normal_emoji);
     lv_freetype_font_delete(font_italic);
-    fprintf(stderr, "[DBG] del italic\n");
     lv_freetype_font_delete(font_normal);
-    fprintf(stderr, "[DBG] del normal\n");
     lv_freetype_font_delete(font_normal_small);
-    fprintf(stderr, "[DBG] del small\n");
     lv_freetype_font_delete(font_emoji);
-    fprintf(stderr, "[DBG] D all deleted, end function\n");
 }
 
 void test_freetype_render_bitmap(void)
