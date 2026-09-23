@@ -68,7 +68,7 @@
 #if LV_USE_DRAW_VG_LITE
     #include "draw/vg_lite/lv_draw_vg_lite.h"
 #endif
-#if LV_USE_DRAW_EPIC
+#if defined(LV_USE_DRAW_EPIC) && LV_USE_DRAW_EPIC
     #include "lv_draw_epic.h"
 #endif
 #if LV_USE_DRAW_DMA2D
@@ -263,7 +263,7 @@ void lv_init(void)
     lv_draw_sdl_init();
 #endif
 
-#if LV_USE_DRAW_EPIC
+#if defined(LV_USE_DRAW_EPIC) && LV_USE_DRAW_EPIC
     lv_draw_epic_init();
 #endif
 
