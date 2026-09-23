@@ -115,21 +115,23 @@
 #define LV_USE_TEST             1
 #define LV_USE_TEST_SCREENSHOT_COMPARE  1
 
-#define LV_BUILD_EXAMPLES       1
-#define LV_USE_DEMO_WIDGETS     1
-#define LV_USE_DEMO_KEYPAD_AND_ENCODER     1
-#define LV_USE_DEMO_FLEX_LAYOUT            1
-#define LV_USE_DEMO_STRESS      1
-#define LV_USE_DEMO_TRANSFORM   1
-#define LV_USE_DEMO_MULTILANG   1
-#define LV_USE_DEMO_RENDER      1
-#define LV_USE_DEMO_MUSIC       1
-#define LV_USE_DEMO_BENCHMARK   1
-#define LV_USE_DEMO_SCROLL      1
-#define LV_USE_DEMO_EBIKE       1
-#define LV_USE_DEMO_VECTOR_GRAPHIC  1
-#define LV_USE_DEMO_HIGH_RES    1
-#define LV_USE_DEMO_SMARTWATCH      1
+/* Vendor adaptation: upstream demos/ content is not shipped in the SDK,
+ * so the demo test cases compile to empty instead of calling missing symbols. */
+#define LV_BUILD_EXAMPLES       0
+#define LV_USE_DEMO_WIDGETS     0
+#define LV_USE_DEMO_KEYPAD_AND_ENCODER     0
+#define LV_USE_DEMO_FLEX_LAYOUT            0
+#define LV_USE_DEMO_STRESS      0
+#define LV_USE_DEMO_TRANSFORM   0
+#define LV_USE_DEMO_MULTILANG   0
+#define LV_USE_DEMO_RENDER      0
+#define LV_USE_DEMO_MUSIC       0
+#define LV_USE_DEMO_BENCHMARK   0
+#define LV_USE_DEMO_SCROLL      0
+#define LV_USE_DEMO_EBIKE       0
+#define LV_USE_DEMO_VECTOR_GRAPHIC  0
+#define LV_USE_DEMO_HIGH_RES    0
+#define LV_USE_DEMO_SMARTWATCH      0
 
 #define LV_USE_OBJ_ID           1
 #define LV_OBJ_ID_AUTO_ASSIGN    1
