@@ -258,6 +258,17 @@ get_filename_component(LVGL_DIR ${LVGL_TEST_DIR} DIRECTORY)
 # Used to preprocess lv_conf_internal.h with the test config
 set(LV_BUILD_CONF_PATH "${LVGL_TEST_DIR}/src/lv_test_conf.h" CACHE STRING "set test configuration")
 
+# Vendor adaptation: the SDK tree ships no demos/ or examples/ content.
+# Avoid add_library() with an empty source list (CMake generate error).
+file(GLOB_RECURSE _vendor_demo_sources "${LVGL_DIR}/demos/*.c")
+if(NOT _vendor_demo_sources)
+    set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "demos not shipped in vendor tree" FORCE)
+endif()
+file(GLOB_RECURSE _vendor_example_sources "${LVGL_DIR}/examples/*.c")
+if(NOT _vendor_example_sources)
+    set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "examples not shipped in vendor tree" FORCE)
+endif()
+
 include(${LVGL_DIR}/CMakeLists.txt)
 target_compile_options(lvgl PUBLIC $<$<COMPILE_LANGUAGE:C>: ${LVGL_C_COMPILE_OPTIONS}>)
 target_compile_options(lvgl PUBLIC $<$<COMPILE_LANGUAGE:CXX>:${LVGL_CXX_COMPILE_OPTIONS}>)
