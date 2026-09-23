@@ -35,11 +35,13 @@ jobs:
           cd external/lvgl_v9
           python3 ./tests/main.py test --build-options OPTIONS_TEST_SYSHEAP
 
-      - name: Upload test build artifacts (screenshots / _err images)
+      - name: Upload test artifacts (diff images / ctest logs)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lvgl-v9-test-build
-          path: external/lvgl_v9/tests/build_options_test_sysheap/
+          name: lvgl-v9-test-results
+          path: |
+            external/lvgl_v9/tests/ref_imgs/**/*_err.png
+            external/lvgl_v9/tests/build_test_sysheap/Testing/
           if-no-files-found: ignore
           retention-days: 14
