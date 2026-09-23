@@ -485,10 +485,37 @@ if (TEST_LIBS_FILES)
     list(APPEND TEST_LIBS test_libs)
 endif()
 
+# Vendor adaptation: upstream demos/ content (render demo sources and the
+# widgets demo image assets) is not shipped, so these tests cannot be linked.
+set(VENDOR_DEMO_EXCLUDED_TESTS
+    test_recolor
+    test_render_to_al88
+    test_render_to_argb1555
+    test_render_to_argb2222
+    test_render_to_argb4444
+    test_render_to_argb8888
+    test_render_to_argb8888_premultiplied
+    test_render_to_i1
+    test_render_to_l8
+    test_render_to_rgb565
+    test_render_to_rgb565_swapped
+    test_render_to_rgb888
+    test_render_to_xrgb8888
+)
+
+# Only link demo/thorvg targets that actually exist in this vendor tree.
+set(VENDOR_OPTIONAL_TEST_TARGETS)
+if(TARGET lvgl_demos)
+    list(APPEND VENDOR_OPTIONAL_TEST_TARGETS lvgl_demos)
+endif()
+if(TARGET lvgl_thorvg)
+    list(APPEND VENDOR_OPTIONAL_TEST_TARGETS lvgl_thorvg)
+endif()
+
 foreach( test_case_fname ${TEST_CASE_FILES} )
     # If test file is foo/bar/baz.c then test_name is "baz".
     get_filename_component(test_name ${test_case_fname} NAME_WLE)
-    if (${test_name} STREQUAL "_test_template")
+    if (${test_name} STREQUAL "_test_template" OR ${test_name} IN_LIST VENDOR_DEMO_EXCLUDED_TESTS)
         continue()
     endif()
 
@@ -512,9 +539,8 @@ foreach( test_case_fname ${TEST_CASE_FILES} )
     )
     target_link_libraries(${test_name} PRIVATE
             test_common
-            lvgl_demos
             lvgl
-            lvgl_thorvg
+            ${VENDOR_OPTIONAL_TEST_TARGETS}
             ${PNG_LIBRARIES}
             ${FREETYPE_LIBRARIES}
             ${LIBDRM_LIBRARIES}
