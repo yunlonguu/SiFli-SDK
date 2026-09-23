@@ -1,0 +1,45 @@
+# LVGL v9 PC-hosted headless UI tests
+# Docs: external/lvgl_v9/tests/README.md
+# First experiment: only OPTIONS_TEST_SYSHEAP (32 bit, system heap).
+# After it is green, remove --build-options to run both SYSHEAP and DEFHEAP.
+name: LVGL UI Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, 'ci/**' ]
+    paths:
+      - 'external/lvgl_v9/**'
+      - '.github/workflows/lvgl-ui-test.yml'
+  pull_request:
+    paths:
+      - 'external/lvgl_v9/**'
+      - '.github/workflows/lvgl-ui-test.yml'
+
+jobs:
+  lvgl-v9-unit-tests:
+    name: LVGL v9 headless tests (Ubuntu, SYSHEAP, 32bit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install LVGL prerequisites
+        run: |
+          sh external/lvgl_v9/scripts/install-prerequisites.sh
+
+      - name: Build and run tests
+        run: |
+          cd external/lvgl_v9
+          ./tests/main.py test --build-options OPTIONS_TEST_SYSHEAP
+
+      - name: Upload test build artifacts (screenshots / _err images)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lvgl-v9-test-build
+          path: external/lvgl_v9/tests/build_options_test_sysheap/
+          if-no-files-found: ignore
+          retention-days: 14
