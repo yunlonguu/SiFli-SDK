@@ -340,6 +340,8 @@ add_library(test_common
         src/test_assets/test_imagebutton_right.c
         src/test_assets/test_music_button_play.c
         src/test_assets/test_lottie_approve.c
+        src/test_assets/img_render_lvgl_logo_l8.c
+        src/test_assets/img_render_lvgl_logo_rgb565.c
         unity/unity.c
         ${TEST_IMAGES_SRC}
 )
