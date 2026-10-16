@@ -1,6 +1,6 @@
 [submodule "middleware/bluetooth"]
 	path = middleware/bluetooth
-	url = ../SiFli-Bluetooth.git
+	url = https://github.com/OpenSiFli/SiFli-Bluetooth.git
 [submodule "tools/SiliconSchema"]
 	path = tools/SiliconSchema
-	url = ../SiliconSchema.git
+	url = https://github.com/OpenSiFli/SiliconSchema.git

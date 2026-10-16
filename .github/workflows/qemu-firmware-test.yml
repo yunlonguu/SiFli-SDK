@@ -1,0 +1,55 @@
+name: QEMU Firmware Smoke Test
+
+on:
+  schedule:
+    # 每天 UTC 00:00（北京 08:00）自动跑一次
+    - cron: '0 0 * * *'
+  push:
+    branches: [main, ci/lvgl-test]
+    paths:
+      - '.github/workflows/qemu-firmware-test.yml'
+      - 'example/get-started/hello_world/**'
+      - 'tools/qemu/**'
+      - '.gitmodules'
+  workflow_dispatch:
+
+jobs:
+  qemu-hello-world:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build hello_world (sf32lb52-lcd_a128r16)
+        run: |
+          source ./export.sh
+          which scons arm-none-eabi-gcc
+          arm-none-eabi-gcc --version | head -1
+          cd example/get-started/hello_world/rtt/project
+          scons --board=sf32lb52-lcd_a128r16_hcpu -j$(nproc)
+
+      - name: Run firmware in QEMU and assert boot
+        run: |
+          ELF=example/get-started/hello_world/rtt/project/build_sf32lb52-lcd_a128r16_hcpu/main.elf
+          ls -la "$ELF"
+          chmod +x tools/qemu/qemu-system-arm
+          # 固件停在 shell 不自动退出，用 timeout 兜底；退出码忽略，靠 grep 断言
+          timeout 30 tools/qemu/qemu-system-arm -M sf32lb52x -nographic -kernel "$ELF" > qemu.log 2>&1 || true
+          echo "===== QEMU output ====="
+          cat qemu.log
+          echo "===== assertions ====="
+          grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
+          grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
+          echo "PASS: hello_world booted to shell in QEMU"
+
+      - name: Upload QEMU log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-log
+          path: qemu.log
