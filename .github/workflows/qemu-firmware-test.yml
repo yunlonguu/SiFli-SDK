@@ -36,9 +36,15 @@ jobs:
           cd example/get-started/hello_world/rtt/project
           scons --board=sf32lb52-lcd_a128r16_hcpu -j$(nproc)
 
+      - name: Install QEMU runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libsndio7.0 libpixman-1-0 libglib2.0-0 libnuma1
+          echo "=== ldd missing check ==="
+          ldd tools/qemu/qemu-system-arm | grep "not found" || echo "all shared libs resolved"
+
       - name: Run firmware in QEMU and assert boot
         run: |
-          sudo apt-get update && sudo apt-get install -y libsdl2-2.0-0 libpixman-1-0 libglib2.0-0
           ELF=example/get-started/hello_world/rtt/project/build_sf32lb52-lcd_a128r16_hcpu/main.elf
           ls -la "$ELF"
           chmod +x tools/qemu/qemu-system-arm
