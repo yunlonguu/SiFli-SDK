@@ -38,6 +38,7 @@ jobs:
 
       - name: Run firmware in QEMU and assert boot
         run: |
+          sudo apt-get update && sudo apt-get install -y libsdl2-2.0-0 libpixman-1-0 libglib2.0-0
           ELF=example/get-started/hello_world/rtt/project/build_sf32lb52-lcd_a128r16_hcpu/main.elf
           ls -la "$ELF"
           chmod +x tools/qemu/qemu-system-arm
