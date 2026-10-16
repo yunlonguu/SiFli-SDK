@@ -25,6 +25,9 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v3
 
+      - name: Install SDK toolchain (arm-none-eabi-gcc, scons)
+        run: ./install.sh --profile default
+
       - name: Build hello_world (sf32lb52-lcd_a128r16)
         run: |
           source ./export.sh
