@@ -1,4 +1,4 @@
-name: QEMU Firmware Smoke Test
+name: QEMU Firmware Test
 
 on:
   schedule:
@@ -8,14 +8,91 @@ on:
     branches: [main, ci/lvgl-test]
     paths:
       - '.github/workflows/qemu-firmware-test.yml'
-      - 'example/get-started/hello_world/**'
+      - 'example/**'
       - 'tools/qemu/**'
       - '.gitmodules'
   workflow_dispatch:
 
 jobs:
-  qemu-hello-world:
+  qemu-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ============ 例程 × 板子 组合 ============
+          # project: scons 执行目录（--board 在这里跑）
+          # ===========================================
+          - name: hello_world
+            project: example/get-started/hello_world/rtt/project
+            board: sf32lb52-lcd_a128r16
+            qemu_machine: sf32lb52x
+            run_assert: |
+              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
+              echo "===== QEMU output ====="
+              cat qemu.log
+              echo "===== assertions ====="
+              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
+              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
+              echo "PASS: hello_world booted to shell in QEMU"
+
+          - name: hello_world
+            project: example/get-started/hello_world/rtt/project
+            board: sf32lb52-lchspi-ulp
+            qemu_machine: "sf32lb52x,flash-base=0x12020000"
+            run_assert: |
+              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
+              echo "===== QEMU output ====="
+              cat qemu.log
+              echo "===== assertions ====="
+              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
+              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
+              echo "PASS: hello_world booted to shell in QEMU"
+
+          - name: hello_world
+            project: example/get-started/hello_world/rtt/project
+            board: sf32lb52-lcd_n16r8
+            qemu_machine: "sf32lb52x,flash-base=0x12020000"
+            run_assert: |
+              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
+              echo "===== QEMU output ====="
+              cat qemu.log
+              echo "===== assertions ====="
+              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
+              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
+              echo "PASS: hello_world booted to shell in QEMU"
+
+          - name: lvgl_v8_demos
+            project: example/multimedia/lvgl/lvgl_v8_demos/project
+            board: sf32lb52-lcd_a128r16
+            qemu_machine: sf32lb52x
+            run_assert: |
+              # push 跑截图冒烟；每日/手动运行等待完整 benchmark 报告。
+              benchmark_args=()
+              if [[ "$GITHUB_EVENT_NAME" == "schedule" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+                benchmark_args=(--benchmark-source example/multimedia/lvgl/lvgl_v8_demos/src/lv_demos/benchmark/lv_demo_benchmark.c --timeout 240)
+              fi
+              python3 tools/qemu/headless_check.py \
+                --qemu tools/qemu/qemu-system-arm \
+                --machine "$QEMU_MACHINE" \
+                --kernel "$ELF" \
+                --expect-size 390x450 --expect-nonblack 0.5 --expect-colors 16 --min-diff-cells 8 \
+                --shots 6 --shot-interval 1.5 --settle 14 \
+                --serial-log qemu.log --ppm-dir shots "${benchmark_args[@]}"
+
+          - name: lvgl_v8_examples
+            project: example/multimedia/lvgl/lvgl_v8_examples/project
+            board: sf32lb52-lcd_a128r16
+            qemu_machine: sf32lb52x
+            run_assert: |
+              python3 tools/qemu/headless_check.py \
+                --qemu tools/qemu/qemu-system-arm \
+                --machine "$QEMU_MACHINE" \
+                --kernel "$ELF" \
+                --expect-size 390x450 --expect-nonblack 0.15 --expect-colors 12 \
+                --shots 3 --shot-interval 1.0 --settle 14 --no-flow \
+                --serial-log qemu.log --ppm-dir shots
+
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -28,13 +105,13 @@ jobs:
       - name: Install SDK toolchain (arm-none-eabi-gcc, scons)
         run: ./install.sh --profile default
 
-      - name: Build hello_world (sf32lb52-lcd_a128r16)
+      - name: Build firmware
         run: |
           source ./export.sh
           which scons arm-none-eabi-gcc
           arm-none-eabi-gcc --version | head -1
-          cd example/get-started/hello_world/rtt/project
-          scons --board=sf32lb52-lcd_a128r16_hcpu -j$(nproc)
+          cd ${{ matrix.project }}
+          scons --board=${{ matrix.board }} -j$(nproc)
 
       - name: Install QEMU runtime libraries
         run: |
@@ -43,23 +120,22 @@ jobs:
           echo "=== ldd missing check ==="
           ldd tools/qemu/qemu-system-arm | grep "not found" || echo "all shared libs resolved"
 
-      - name: Run firmware in QEMU and assert boot
+      - name: Run firmware in QEMU and assert
+        timeout-minutes: 6
         run: |
-          ELF=example/get-started/hello_world/rtt/project/build_sf32lb52-lcd_a128r16_hcpu/main.elf
-          ls -la "$ELF"
           chmod +x tools/qemu/qemu-system-arm
-          # 固件停在 shell 不自动退出，用 timeout 兜底；退出码忽略，靠 grep 断言
-          timeout 30 tools/qemu/qemu-system-arm -M sf32lb52x -nographic -kernel "$ELF" > qemu.log 2>&1 || true
-          echo "===== QEMU output ====="
-          cat qemu.log
-          echo "===== assertions ====="
-          grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
-          grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
-          echo "PASS: hello_world booted to shell in QEMU"
+          export ELF="${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf"
+          export QEMU_MACHINE="${{ matrix.qemu_machine }}"
+          ls -la "$ELF"
+          ${{ matrix.run_assert }}
 
-      - name: Upload QEMU log
+      - name: Upload QEMU log & screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-log
-          path: qemu.log
+          name: ${{ matrix.name }}-${{ matrix.board }}
+          path: |
+            qemu.log
+            qemu.log.qemu.log
+            shots/*.ppm
+          if-no-files-found: ignore
