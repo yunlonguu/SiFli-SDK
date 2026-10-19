@@ -243,8 +243,8 @@ python3 -m unittest discover -s tests -p test_qemu_screenshot.py -v
 ## lchspi-ulp hardware comparison CI
 
 The `lvgl_v8_demos_hardware` job builds firmware and a Linux QEMU from pinned
-commit `46044958d5fe38060e2179ffddfd55e500630f4d`, applying
-`patches/hardware-epic.patch` (the local hardware-comparison fixes).
+commit `0febf2dcbf7c8aaf668acdcb861afea1446040fb` from `yunlonguu/qemu`.
+The EPIC hardware-comparison fixes are included in that commit; no QEMU patch is applied.
 It captures all 96 frozen EPIC scenes with two stable samples per scene, then
 compares them with `ref_imgs/hardware_lchspi_ulp` at RGB565 precision.
 `--record` writes only the temporary QEMU actual images, never the hardware baseline.
@@ -261,3 +261,23 @@ and per-scene pass/fail results. The report uploads even on failure.
 The hardware reference is a draw-buffer export, not a camera photograph.
 The firmware is rebuilt in CI, so future source/toolchain changes may change its
 ELF hash or rendered pixels; the built ELF and rtconfig.h are included in artifacts.
+
+## CI storage and caching policy
+
+- Keep complete HTML reports and their referenced images on success and failure.
+  The duplicate `hardware-actual` upload is omitted because the comparison report
+  already contains QEMU frames. Smoke-test PPM captures remain available.
+- Successful job artifacts expire after 14 days; unsuccessful job reports and
+  failure-only ELF artifacts request 90 days, subject to repository limits.
+- After the entire test matrix succeeds, a separate job removes artifacts from
+  older successful runs of this workflow on the same branch. It preserves run
+  history, failed runs and newer runs. Failed matrix jobs never trigger cleanup.
+  A successful job inside a failed matrix still uses the 14-day retention.
+- `cleanup_artifacts.py --dry-run` previews cleanup using `GITHUB_REPOSITORY`
+  and `GITHUB_RUN_ID`; only the cleanup job has `actions: write` permission.
+- The hardware QEMU executable cache key includes runner OS/architecture, the
+  pinned QEMU revision and workflow hash. Cache misses rebuild QEMU.
+  Runtime libraries are installed on every run, including cache hits.
+- Markdown-only pushes do not trigger tests. Scheduled/manual runs remain enabled.
+- SDK toolchain and virtual environments are not broadly cached under `~/.local`;
+  their installation paths and invalidation rules need separate verification.

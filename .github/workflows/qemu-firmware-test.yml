@@ -11,7 +11,11 @@ on:
       - 'example/**'
       - 'tools/qemu/**'
       - '.gitmodules'
+      - '!**/*.md'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   qemu-test:
@@ -160,13 +164,20 @@ jobs:
           source /tmp/qemu-test-venv/bin/activate
           python3 -m unittest discover -s tests -p test_qemu_screenshot.py
 
-      - name: Build QEMU with hardware comparison fixes
+      - name: Cache hardware QEMU executable
         if: matrix.name == 'lvgl_v8_demos_hardware'
+        id: hardware-qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/qemu-hardware/build/qemu-system-arm
+          key: hardware-qemu-${{ runner.os }}-${{ runner.arch }}-0febf2dcbf7c-v1-${{ hashFiles('.github/workflows/qemu-firmware-test.yml') }}
+
+      - name: Build QEMU with hardware comparison fixes
+        if: matrix.name == 'lvgl_v8_demos_hardware' && steps.hardware-qemu-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install -y ninja-build pkg-config python3-venv libglib2.0-dev libpixman-1-dev
-          git clone --filter=blob:none --no-checkout https://github.com/rabbitsaviola/qemu.git /tmp/qemu-hardware
-          git -C /tmp/qemu-hardware checkout 46044958d5fe38060e2179ffddfd55e500630f4d
-          git -C /tmp/qemu-hardware apply "$GITHUB_WORKSPACE/tools/qemu/patches/hardware-epic.patch"
+          git clone --filter=blob:none --no-checkout https://github.com/yunlonguu/qemu.git /tmp/qemu-hardware
+          git -C /tmp/qemu-hardware checkout 0febf2dcbf7c8aaf668acdcb861afea1446040fb
           mkdir /tmp/qemu-hardware/build
           cd /tmp/qemu-hardware/build
           ../configure --target-list=arm-softmmu --disable-docs --disable-tools --disable-guest-agent --disable-werror --disable-gtk --disable-sdl --disable-opengl
@@ -196,7 +207,29 @@ jobs:
             qemu-touch.log*
             touch-visual/
             hardware-comparison/
-            hardware-actual/
-            ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf
             ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/rtconfig.h
           if-no-files-found: ignore
+          retention-days: ${{ job.status == 'success' && 14 || 90 }}
+          compression-level: 6
+
+      - name: Upload firmware for failure diagnosis
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-${{ matrix.board }}-elf
+          path: ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf
+          if-no-files-found: ignore
+          retention-days: 90
+
+  cleanup-success-artifacts:
+    needs: qemu-test
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retain current successful artifacts and all failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/qemu/cleanup_artifacts.py
