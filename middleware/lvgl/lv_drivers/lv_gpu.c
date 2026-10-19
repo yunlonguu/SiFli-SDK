@@ -843,10 +843,7 @@ static void draw_img(struct _lv_draw_ctx_t *draw_ctx,
             dest.data_size = dest.header.w * dest.header.h * sizeof(lv_color_t);
         }
 
-        lv_opa_t opa = (cf == LV_IMG_CF_ALPHA_1BIT || \
-                        cf == LV_IMG_CF_ALPHA_2BIT || \
-                        cf == LV_IMG_CF_ALPHA_4BIT || \
-                        cf == LV_IMG_CF_ALPHA_8BIT) ? draw_dsc->recolor_opa : draw_dsc->opa;
+        lv_opa_t opa = draw_dsc->opa;
 
 
 #ifdef SOC_SF32LB55X
@@ -1373,6 +1370,11 @@ static lv_res_t my_decode_and_draw(lv_draw_ctx_t *draw_ctx, const lv_draw_img_ds
 {
     if (draw_dsc->opa <= LV_OPA_MIN) return LV_RES_OK;
 
+    /* EPIC's image path does not implement these LVGL blending operations. */
+    if (draw_dsc->blend_mode != LV_BLEND_MODE_NORMAL || draw_dsc->recolor_opa > LV_OPA_MIN ||
+            _lv_refr_get_disp_refreshing()->driver->screen_transp)
+        return LV_RES_INV;
+
     _lv_img_cache_entry_t *cdsc = _lv_img_cache_open(src, draw_dsc->recolor, draw_dsc->frame_id);
 
     if (cdsc == NULL || (!EPIC_SUPPORTED_CF(cdsc->dec_dsc.header.cf))) return LV_RES_INV;
@@ -1479,6 +1481,13 @@ static lv_res_t my_decode_and_draw(lv_draw_ctx_t *draw_ctx, const lv_draw_img_ds
 
 static void draw_blend(lv_draw_ctx_t *draw_ctx, const lv_draw_sw_blend_dsc_t *dsc)
 {
+    /* The legacy EPIC fill path assumes an opaque RGB destination. */
+    if (_lv_refr_get_disp_refreshing()->driver->screen_transp)
+    {
+        lv_draw_sw_blend_basic(draw_ctx, dsc);
+        return;
+    }
+
     /*Let's get the blend area which is the intersection of the area to fill and the clip area.*/
     lv_area_t blend_area;
     if (!_lv_area_intersect(&blend_area, dsc->blend_area, draw_ctx->clip_area)) return; /*Fully clipped, nothing to do*/

@@ -71,6 +71,9 @@ typedef struct
 static lv_style_t style_common;
 static bool opa_mode = true;
 static bool run_max_speed = false;
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+static bool snapshot_mode;
+#endif
 static finished_cb_t *benchmark_finished_cb = NULL;
 static uint32_t disp_ori_timer_period;
 static uint32_t anim_ori_timer_period;
@@ -708,6 +711,9 @@ void lv_demo_benchmark(void)
 
 void lv_demo_benchmark_close(void)
 {
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+    snapshot_mode = false;
+#endif
     if (next_scene_timer) lv_timer_del(next_scene_timer);
     next_scene_timer = NULL;
 
@@ -746,6 +752,25 @@ void lv_demo_benchmark_run_scene(int_fast16_t scene_no)
         lv_timer_set_repeat_count(t, 1);
     }
 }
+
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+bool lv_demo_benchmark_snapshot(int_fast16_t scene_no)
+{
+    if (scene_no < 0 || scene_no >= (dimof(scenes) - 1) * 2) return false;
+
+    lv_demo_benchmark_close();
+    snapshot_mode = true;
+    benchmark_init();
+    opa_mode = scene_no & 1;
+    scene_act = scene_no >> 1;
+    lv_label_set_text_fmt(title, "%d: %s%s", (int)scene_no,
+                          scenes[scene_act].name, opa_mode ? " + opa" : "");
+    lv_label_set_text(subtitle, "");
+    rnd_reset();
+    scenes[scene_act].create_cb();
+    return true;
+}
+#endif
 
 void lv_demo_benchmark_set_finished_cb(finished_cb_t *finished_cb)
 {
@@ -1127,6 +1152,21 @@ static void txt_create(lv_style_t *style)
         lv_label_set_text(obj, TXT);
 
         fall_anim(obj);
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+        if (snapshot_mode)
+        {
+            /* Show one complete sample; stacked labels obscure glyph defects. */
+            if (i == 0)
+            {
+                lv_obj_set_width(obj, lv_obj_get_width(scene_bg) - 20);
+                lv_obj_set_pos(obj, 10, 20);
+            }
+            else
+            {
+                lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+#endif
     }
 }
 
@@ -1178,6 +1218,15 @@ static void arc_create(lv_style_t *style)
 
         uint32_t t = rnd_next(ANIM_TIME_MIN / 4, ANIM_TIME_MAX / 4);
 
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+        if (snapshot_mode)
+        {
+            lv_arc_set_end_angle(obj, 180);
+            fall_anim(obj);
+            continue;
+        }
+#endif
+
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, obj);
@@ -1202,6 +1251,15 @@ static void fall_anim(lv_obj_t *obj)
     lv_obj_set_x(obj, rnd_next(0, lv_obj_get_width(scene_bg) - lv_obj_get_width(obj)));
 
     uint32_t t = rnd_next(ANIM_TIME_MIN, ANIM_TIME_MAX);
+
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+    if (snapshot_mode)
+    {
+        lv_obj_update_layout(obj);
+        lv_obj_set_y(obj, (lv_obj_get_height(scene_bg) - lv_obj_get_height(obj)) / 2);
+        return;
+    }
+#endif
 
     lv_anim_t a;
     lv_anim_init(&a);

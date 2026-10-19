@@ -36,6 +36,8 @@ headless_check.py — QEMU 无头画面流转断言工具（SiFli SDK CI 用）
   --no-flow         跳过画面流转断言（仅检查非黑+死机），用于静态画面例程
   --benchmark-source benchmark C 源文件；提供后等待报告中的全部场景结果
                      （完整运行建议配合 --timeout 240；不检查性能阈值）
+  --reference      静态页面的参考 PNG；逐张全屏比较，缺图直接失败（需要 Pillow）
+  --pixel-tolerance 每个 RGB 通道的允许差值（0~255），默认 0，任一像素超差即失败
 
 退出码：
   0 = 全部断言通过；1 = 任一断言失败；2 = 运行错误（QEMU 起不来等）
@@ -132,9 +134,41 @@ def color_bucket_count(px, w, h, step=3, bucket=16):
     return len(seen)
 
 
+def compare_reference(shots, reference, output_dir, tolerance=0):
+    """仿照 LVGL TEST_ASSERT_EQUAL_SCREENSHOT，全屏逐像素比较并保留诊断图片。"""
+    from PIL import Image, ImageChops
+
+    with Image.open(reference) as image:
+        ref = image.convert('RGB')
+    ref.save(os.path.join(output_dir, 'reference.png'))
+    results = []
+    for path, w, h, px in shots:
+        name = os.path.splitext(os.path.basename(path))[0]
+        actual = Image.frombytes('RGB', (w, h), px)
+        actual.save(os.path.join(output_dir, name + '_actual.png'))
+        if actual.size != ref.size:
+            results.append((name, False, f'size {actual.size} != reference {ref.size}'))
+            continue
+        diff = ImageChops.difference(actual, ref)
+        channels = diff.split()
+        maximum = ImageChops.lighter(ImageChops.lighter(channels[0], channels[1]), channels[2])
+        histogram = maximum.histogram()
+        changed = sum(histogram[tolerance+1:])
+        max_delta = maximum.getextrema()[1]
+        # 保存原始差值图及二值差异掩码，黑色为一致，白色为超差像素。
+        diff.save(os.path.join(output_dir, name + '_diff.png'))
+        maximum.point([0 if value <= tolerance else 255 for value in range(256)]).save(
+            os.path.join(output_dir, name + '_mask.png'))
+        results.append((name, changed == 0,
+                        f'{changed}/{w*h} pixels differ ({changed/(w*h):.4%}), '
+                        f'max delta={max_delta}, tolerance={tolerance}'))
+    return results
+
+
 # ---------------------------------------------------------------- QEMU 驱动
 class QemuSession:
-    def __init__(self, qemu, kernel, serial_log, ppm_dir, timeout=60, machine='sf32lb52x'):
+    def __init__(self, qemu, kernel, serial_log, ppm_dir, timeout=60, machine='sf32lb52x',
+                 serial_input=False, extra_devices=()):
         self.deadline = time.monotonic() + timeout
         self.serial_log = serial_log
         self.buffer = b''
@@ -142,15 +176,24 @@ class QemuSession:
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
         os.makedirs(ppm_dir, exist_ok=True)
+        self.serial = None
+        serial_path = os.path.join(ppm_dir, 'qemu_serial.sock')
+        serial_args = ['-serial', f'file:{serial_log}']
+        if serial_input:
+            serial_args = ['-chardev',
+                           f'socket,id=uart,path={serial_path},server=on,wait=off,logfile={serial_log}',
+                           '-serial', 'chardev:uart']
         cmd = [
             qemu, '-M', machine, '-nographic', '-display', 'none',
             '-device', 'sifli-lcd-panel',
             '-device', 'ft6146,id=touch,bus=i2c1,irqchip=gpio1,irq-pin=31',
             '-qmp', f'unix:{self.sock_path},server=on,wait=off',
             '-monitor', 'none',
-            '-serial', f'file:{serial_log}',
+            *serial_args,
             '-kernel', kernel,
         ]
+        for device in extra_devices:
+            cmd.extend(['-device', device])
         with open(serial_log + '.qemu.log', 'wb') as stderr:
             self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr)
         self.sock = None
@@ -159,11 +202,21 @@ class QemuSession:
             if 'QMP' not in self._receive():
                 raise RuntimeError('Missing QMP greeting')
             self._command('qmp_capabilities')
+            if serial_input:
+                self.serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.serial.connect(serial_path)
+                self.serial.setblocking(False)
         except Exception:
             self.close()
             raise
 
     def remaining(self):
+        if self.serial:
+            try:
+                while self.serial.recv(65536):
+                    pass
+            except BlockingIOError:
+                pass
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError('Overall test timeout')
@@ -229,6 +282,8 @@ class QemuSession:
 
     def close(self):
         try:
+            if self.serial:
+                self.serial.close()
             if self.sock:
                 self.sock.close()
         except OSError:
@@ -268,7 +323,8 @@ def benchmark_cases(source):
                       source_text, re.S)
     if not match:
         raise ValueError('Benchmark scenes[] not found')
-    names = re.findall(r'\.name\s*=\s*"([^"]+)"', match.group(1))
+    scene_list = re.sub(r'/\*.*?\*/|//[^\n]*', '', match.group(1), flags=re.S)
+    names = re.findall(r'\.name\s*=\s*"([^"]+)"', scene_list)
     if not names:
         raise ValueError('Benchmark scene list is empty')
     return [case for name in names for case in (name, name + ' + opa')]
@@ -332,6 +388,8 @@ def main():
     ap.add_argument('--timeout', type=int, default=60)
     ap.add_argument('--no-flow', action='store_true')
     ap.add_argument('--benchmark-source', help='Wait for all benchmark CSV results from this C source')
+    ap.add_argument('--reference', help='Reference PNG for a static page (requires Pillow)')
+    ap.add_argument('--pixel-tolerance', type=int, default=0)
     args = ap.parse_args()
     if args.shots < (1 if args.no_flow else 2):
         ap.error('--shots must be >= 1 (--no-flow) or >= 2 (frame-flow)')
@@ -339,6 +397,19 @@ def main():
         ap.error('timeout must be positive; settle/shot-interval must be nonnegative')
     if not 0 <= args.expect_nonblack <= 1:
         ap.error('--expect-nonblack must be between 0 and 1')
+    if not 0 <= args.pixel_tolerance <= 255:
+        ap.error('--pixel-tolerance must be between 0 and 255')
+    if args.reference:
+        if not args.no_flow or args.benchmark_source:
+            ap.error('--reference requires --no-flow and cannot be used with --benchmark-source')
+        try:
+            from PIL import Image
+            with Image.open(args.reference) as image:
+                if image.format != 'PNG':
+                    raise ValueError('reference must be a PNG image')
+                image.load()
+        except (ImportError, OSError, ValueError) as e:
+            ap.error(f'invalid reference or missing Pillow: {e}')
 
     if not os.path.exists(args.qemu):
         print(f"FAIL: qemu not found: {args.qemu}")
@@ -410,6 +481,12 @@ def main():
         else:
             results.append(("frame-flow", True, "skipped (--no-flow)"))
 
+        if args.reference:
+            for name, ok, msg in compare_reference(shots, args.reference, args.ppm_dir,
+                                                    args.pixel_tolerance):
+                results.append(('screenshot-' + name, ok, msg))
+            print(f'Visual artifacts: {args.ppm_dir} (reference, actual, diff, mask PNGs)', flush=True)
+
         # 全量模式仍保留前面的截图检查，不以串口报告代替显示检查。
         if expected and all(ok for _, ok, _ in results):
             wait_benchmark(q, args.serial_log, expected)
@@ -437,6 +514,14 @@ def main():
     failed = [(name, msg) for name, ok, msg in results if not ok]
     for name, ok, msg in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: {msg}")
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+            summary.write('### QEMU UI checks\n\n| Check | Result | Details |\n| --- | --- | --- |\n')
+            for name, ok, msg in results:
+                summary.write(f'| {name} | {"PASS" if ok else "FAIL"} | {msg} |\n')
+            if args.reference:
+                summary.write('\nDownload this job’s artifact for `reference.png`, '
+                              '`shot_*_actual.png`, `shot_*_diff.png` and `shot_*_mask.png`.\n')
     if failed:
         print(f"FAILED: {len(failed)} check(s)")
         return 1

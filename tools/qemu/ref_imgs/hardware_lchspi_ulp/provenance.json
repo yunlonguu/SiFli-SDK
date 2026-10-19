@@ -1,0 +1,15 @@
+{
+  "board": "sf32lb52-lchspi-ulp_hcpu",
+  "resolution": [
+    390,
+    450
+  ],
+  "renderer": "epic",
+  "scene_count": 96,
+  "kernel": "/Volumes/TB/sv_project/artifacts/sifli-ui-20261019/lchspi-ulp/main.elf",
+  "kernel_sha256": "e722b48ab63d1c861a1688fd94b116a647c366ea03f9cf685f89a5ebe2810727",
+  "qemu": "/Volumes/TB/qemu-sifli-source/build/qemu-system-arm",
+  "qemu_sha256": "c5072491fb2ed6755a7572a321de43d1f4c403b3e6157174da63c6cbddecf3e6",
+  "hardware_capture": "draw buffer, not physical panel photograph",
+  "reference_status": "diagnostic; not automatically approved"
+}

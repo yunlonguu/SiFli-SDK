@@ -33,6 +33,10 @@ void lv_demo_benchmark_close(void);
 
 void lv_demo_benchmark_run_scene(int_fast16_t scene_no);
 
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+bool lv_demo_benchmark_snapshot(int_fast16_t scene_no);
+#endif
+
 void lv_demo_benchmark_set_finished_cb(finished_cb_t *finished_cb);
 
 /**

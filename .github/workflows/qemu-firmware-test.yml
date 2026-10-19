@@ -67,7 +67,7 @@ jobs:
             board: sf32lb52-lcd_a128r16
             qemu_machine: sf32lb52x
             run_assert: |
-              # push 跑截图冒烟；每日/手动运行等待完整 benchmark 报告。
+              # 每次检查动画冒烟及固定场景；每日/手动运行额外等待完整性能报告。
               benchmark_args=()
               if [[ "$GITHUB_EVENT_NAME" == "schedule" || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
                 benchmark_args=(--benchmark-source example/multimedia/lvgl/lvgl_v8_demos/src/lv_demos/benchmark/lv_demo_benchmark.c --timeout 240)
@@ -79,6 +79,11 @@ jobs:
                 --expect-size 390x450 --expect-nonblack 0.5 --expect-colors 16 --min-diff-cells 8 \
                 --shots 6 --shot-interval 1.5 --settle 14 \
                 --serial-log qemu.log --ppm-dir shots "${benchmark_args[@]}"
+              python3 tools/qemu/demo_visual_check.py \
+                --qemu tools/qemu/qemu-system-arm --machine "$QEMU_MACHINE" --kernel "$ELF" \
+                --source example/multimedia/lvgl/lvgl_v8_demos/src/lv_demos/benchmark/lv_demo_benchmark.c \
+                --references tools/qemu/ref_imgs/benchmark_sf32lb52-lcd_a128r16 \
+                --output demo-visual --serial-log qemu-demo-visual.log --timeout 180
 
           - name: lvgl_v8_examples
             project: example/multimedia/lvgl/lvgl_v8_examples/project
@@ -91,7 +96,29 @@ jobs:
                 --kernel "$ELF" \
                 --expect-size 390x450 --expect-nonblack 0.15 --expect-colors 12 \
                 --shots 3 --shot-interval 1.0 --settle 14 --no-flow \
+                --reference tools/qemu/ref_imgs/lvgl_v8_examples_sf32lb52-lcd_a128r16.png \
                 --serial-log qemu.log --ppm-dir shots
+              python3 tools/qemu/touch_check.py \
+                --qemu tools/qemu/qemu-system-arm --machine "$QEMU_MACHINE" --kernel "$ELF" \
+                --initial-reference tools/qemu/ref_imgs/lvgl_v8_examples_sf32lb52-lcd_a128r16.png \
+                --references tools/qemu/ref_imgs/scroll_touch_sf32lb52-lcd_a128r16 \
+                --output touch-visual --serial-log qemu-touch.log
+
+          - name: lvgl_v8_demos_hardware
+            project: example/multimedia/lvgl/lvgl_v8_demos/project
+            board: sf32lb52-lchspi-ulp
+            qemu_machine: "sf32lb52x,flash-base=0x12020000,flash-size=33554432,psram-size=8388608"
+            run_assert: |
+              python3 tools/qemu/demo_visual_check.py \
+                --qemu /tmp/qemu-hardware/build/qemu-system-arm \
+                --machine "$QEMU_MACHINE" --kernel "$ELF" \
+                --device i2c-echo,bus=i2c2,address=0x49 \
+                --source example/multimedia/lvgl/lvgl_v8_demos/src/lv_demos/benchmark/lv_demo_benchmark.c \
+                --references hardware-actual --record --renderer epic \
+                --output demo-visual --serial-log qemu-demo-visual.log --timeout 1200
+              python3 tools/qemu/hardware_ci_report.py \
+                --hardware tools/qemu/ref_imgs/hardware_lchspi_ulp \
+                --qemu hardware-actual --output hardware-comparison
 
     steps:
       - name: Checkout (with submodules)
@@ -120,8 +147,26 @@ jobs:
           echo "=== ldd missing check ==="
           ldd tools/qemu/qemu-system-arm | grep "not found" || echo "all shared libs resolved"
 
+      - name: Install screenshot comparison dependency
+        if: startsWith(matrix.name, 'lvgl_v8_')
+        run: |
+          uv pip install --python python3 --system -r tools/qemu/requirements.txt
+          python3 -m unittest discover -s tests -p test_qemu_screenshot.py
+
+      - name: Build QEMU with hardware comparison fixes
+        if: matrix.name == 'lvgl_v8_demos_hardware'
+        run: |
+          sudo apt-get install -y ninja-build pkg-config python3-venv libglib2.0-dev libpixman-1-dev
+          git clone --filter=blob:none --no-checkout https://github.com/rabbitsaviola/qemu.git /tmp/qemu-hardware
+          git -C /tmp/qemu-hardware checkout 46044958d5fe38060e2179ffddfd55e500630f4d
+          git -C /tmp/qemu-hardware apply "$GITHUB_WORKSPACE/tools/qemu/patches/hardware-epic.patch"
+          mkdir /tmp/qemu-hardware/build
+          cd /tmp/qemu-hardware/build
+          ../configure --target-list=arm-softmmu --disable-docs --disable-tools --disable-guest-agent --disable-werror --disable-gtk --disable-sdl --disable-opengl
+          ninja -j2 qemu-system-arm
+
       - name: Run firmware in QEMU and assert
-        timeout-minutes: 6
+        timeout-minutes: 25
         run: |
           chmod +x tools/qemu/qemu-system-arm
           export ELF="${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf"
@@ -138,4 +183,13 @@ jobs:
             qemu.log
             qemu.log.qemu.log
             shots/*.ppm
+            shots/*.png
+            qemu-demo-visual.log*
+            demo-visual/
+            qemu-touch.log*
+            touch-visual/
+            hardware-comparison/
+            hardware-actual/
+            ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf
+            ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/rtconfig.h
           if-no-files-found: ignore

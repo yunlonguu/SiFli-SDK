@@ -1,1 +1,11 @@
 rsource "lv_demos/Kconfig"
+
+config LV_DEMO_QEMU_SNAPSHOT
+    bool "Enable deterministic benchmark snapshots for QEMU tests"
+    depends on LV_USE_DEMO_BENCHMARK && FINSH_USING_MSH
+    default n
+    help
+        Add a shell command for CI to select and freeze benchmark scenes.
+        Commands are executed by the LVGL main thread.
+        A single full-screen RGB565 buffer can also be exported over UART
+        for hardware/QEMU comparison using lv_frame_dump.

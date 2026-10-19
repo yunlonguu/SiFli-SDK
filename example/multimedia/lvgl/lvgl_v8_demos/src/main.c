@@ -5,6 +5,10 @@
 #include "lv_ex_data.h"
 #include "lv_demos.h"
 
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+void lv_demo_qemu_poll(void);
+#endif
+
 #ifdef  LV_USE_DEMO_WIDGETS
     #define lv_demo_main lv_demo_widgets
 #elif   defined(LV_USE_DEMO_BENCHMARK)
@@ -42,6 +46,9 @@ int main(void)
 
     while (1)
     {
+#ifdef LV_DEMO_QEMU_SNAPSHOT
+        lv_demo_qemu_poll();
+#endif
         ms = lv_task_handler();
         rt_thread_mdelay(ms);
     }
