@@ -137,8 +137,12 @@ jobs:
           source ./export.sh
           which scons arm-none-eabi-gcc
           arm-none-eabi-gcc --version | head -1
-          cd ${{ matrix.project }}
-          scons --board=${{ matrix.board }} -j$(nproc)
+          if [[ "${{ matrix.name }}" == lvgl_v8_demos* ]]; then
+            python3 tools/qemu/build_visual_firmware.py --board=${{ matrix.board }} -j$(nproc)
+          else
+            cd "${{ matrix.project }}"
+            scons --board=${{ matrix.board }} -j$(nproc)
+          fi
 
       - name: Install QEMU runtime libraries
         run: |

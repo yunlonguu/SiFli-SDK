@@ -1,5 +1,5 @@
 diff --git a/hw/display/sifli-epic.c b/hw/display/sifli-epic.c
-index 214819f..8ff6393 100644
+index 214819f..900e8ad 100644
 --- a/hw/display/sifli-epic.c
 +++ b/hw/display/sifli-epic.c
 @@ -35,8 +35,8 @@
@@ -167,7 +167,7 @@ index 214819f..8ff6393 100644
 - * Sampling is nearest-neighbour: FILTER_EN is the monochrome colour
 - * substitute, not an interpolation control (see the header).
 + * Memory layers interpolate colour and coverage independently.
-+ * FILTER_EN controls colour substitution, not the sampling kernel.
++ * FILTER_EN controls colour-key rejection, not the sampling kernel.
   */
  static void epic_draw_layer_transformed(SifliEpicState *s, const EpicLayer *l,
                                          uint8_t *canvas, unsigned cx0,
@@ -183,7 +183,7 @@ index 214819f..8ff6393 100644
      uint32_t src = sifli_sbus_to_cpu_addr(s->reg[l->src_off / 4]);
      unsigned max_col = (extents & EPIC_VL_EXTENTS_MAX_COL_Msk) >>
                         EPIC_VL_EXTENTS_MAX_COL_Pos;
-@@ -682,14 +750,15 @@ static void epic_draw_layer_transformed(SifliEpicState *s, const EpicLayer *l,
+@@ -682,39 +750,60 @@ static void epic_draw_layer_transformed(SifliEpicState *s, const EpicLayer *l,
  
      for (y = MAX(t.ly0, cy0); y <= MIN(ly1, cy0 + ch - 1); y++) {
          for (x = MAX(t.lx0, cx0); x <= MIN(lx1, cx0 + cw - 1); x++) {
@@ -202,17 +202,23 @@ index 214819f..8ff6393 100644
  
              /*
               * Only the region the HAL clipped -- and told the hardware about
-@@ -700,21 +769,38 @@ static void epic_draw_layer_transformed(SifliEpicState *s, const EpicLayer *l,
-                 continue;
-             }
- 
+              * through EXTENTS -- is drawn. Everything else is left as it was.
+              */
+             if (sx < 0 || sy < 0 || sx > (int32_t)max_col ||
+-                sy > (int32_t)max_line) {
+-                continue;
+-            }
+-
 -            addr = (int64_t)src + (int64_t)sy * src_stride +
 -                   (int64_t)sx * src_bpp;
 -            if (addr < 0 || addr > UINT32_MAX ||
 -                !epic_guest_read(addr, raw, src_bpp)) {
--                continue;
--            }
--
++                sy > (int32_t)max_line ||
++                (t.rotating && (sx >= (int32_t)max_col ||
++                                sy >= (int32_t)max_line))) {
+                 continue;
+             }
+ 
 -            px = epic_decode_pixel(raw, format);
 -            if (alpha_sel) {
 -                a = alpha;
@@ -221,41 +227,42 @@ index 214819f..8ff6393 100644
 -            } else {
 -                a = 255;
 +            {
-+                unsigned wx = (fx & 0xffff) >> 8;
-+                unsigned wy = (fy & 0xffff) >> 8;
-+                uint64_t sum_a = 0, sum_r = 0, sum_g = 0, sum_b = 0;
-+                unsigned ix, iy;
++                unsigned bits = t.rotating ? 12 : 8;
++                unsigned denominator = (1u << bits) - 1;
++                unsigned wx = (fx & 0xffff) >> (16 - bits);
++                unsigned wy = (fy & 0xffff) >> (16 - bits);
++                EpicPixel samples[2][2] = { 0 };
++                unsigned ix, iy, channel;
 +
 +                for (iy = 0; iy < 2; iy++) {
 +                    for (ix = 0; ix < 2; ix++) {
-+                        EpicPixel sample;
-+                        unsigned weight = (ix ? wx : 256 - wx) *
-+                                          (iy ? wy : 256 - wy);
-+                        unsigned sample_x = MIN(sx + ix, max_col);
-+                        unsigned sample_y = MIN(sy + iy, max_line);
-+
-+                        if (!weight || !epic_read_pixel(src, src_stride,
-+                                sample_x, sample_y, format, &sample)) {
-+                            continue;
-+                        }
-+                        sum_a += (uint64_t)sample.a * weight;
-+                        sum_r += (uint64_t)sample.r * weight;
-+                        sum_g += (uint64_t)sample.g * weight;
-+                        sum_b += (uint64_t)sample.b * weight;
++                        epic_read_pixel(src, src_stride,
++                                        MIN(sx + ix, max_col),
++                                        MIN(sy + iy, max_line), format,
++                                        &samples[iy][ix]);
 +                    }
 +                }
-+                px = (EpicPixel) { .a = (sum_a + 32768) >> 16 };
-+                if (sum_a) {
-+                    px.r = (sum_r + 32768) >> 16;
-+                    px.g = (sum_g + 32768) >> 16;
-+                    px.b = (sum_b + 32768) >> 16;
++                /* Each axis rounds separately; rotation retains 12-bit weights. */
++                for (channel = 0; channel < sizeof(px); channel++) {
++                    unsigned top = (((uint8_t *)&samples[0][0])[channel] *
++                                    (denominator - wx) +
++                                    ((uint8_t *)&samples[0][1])[channel] * wx +
++                                    denominator / 2) / denominator;
++                    unsigned bottom = (((uint8_t *)&samples[1][0])[channel] *
++                                       (denominator - wx) +
++                                       ((uint8_t *)&samples[1][1])[channel] * wx +
++                                       denominator / 2) / denominator;
++
++                    ((uint8_t *)&px)[channel] =
++                        (top * (denominator - wy) + bottom * wy +
++                         denominator / 2) / denominator;
 +                }
              }
 +            a = epic_layer_alpha(s, l, cfg, format, &px);
  
              dst = canvas + ((y - cy0) * cw + (x - cx0)) * dst_bpp;
              epic_composite(dst, o_format, format, px, a);
-@@ -739,11 +825,7 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
+@@ -739,11 +828,7 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
      uint32_t tl = s->reg[l->tl_off / 4];
      uint32_t br = s->reg[l->br_off / 4];
      unsigned format = cfg & EPIC_L_CFG_FORMAT_Msk;
@@ -267,7 +274,7 @@ index 214819f..8ff6393 100644
      uint32_t src = sifli_sbus_to_cpu_addr(s->reg[l->src_off / 4]);
      uint32_t coeng = s->reg[SIFLI_EPIC_COENG_CFG / 4];
      unsigned lx0 = tl & EPIC_CANVAS_X_Msk;
-@@ -797,11 +879,9 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
+@@ -797,11 +882,9 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
          return;
      }
  
@@ -281,7 +288,7 @@ index 214819f..8ff6393 100644
           */
          qemu_log_mask(LOG_GUEST_ERROR,
                        "sifli-epic: %s is active with a zero row stride\n",
-@@ -809,10 +889,11 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
+@@ -809,10 +892,11 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
          return;
      }
      if (format != EPIC_FMT_RGB565 && format != EPIC_FMT_RGB888 &&
@@ -296,7 +303,7 @@ index 214819f..8ff6393 100644
           */
          qemu_log_mask(LOG_GUEST_ERROR,
                        "sifli-epic: %s uses source format %u, which is not "
-@@ -833,25 +914,16 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
+@@ -833,25 +917,25 @@ static void epic_draw_layer(SifliEpicState *s, const EpicLayer *l,
  
      for (y = MAX(ly0, cy0); y <= MIN(ly1, cy0 + ch - 1); y++) {
          for (x = MAX(lx0, cx0); x <= MIN(lx1, cx0 + cw - 1); x++) {
@@ -320,13 +327,21 @@ index 214819f..8ff6393 100644
 -                a = px.a;
 -            } else {
 -                a = 255;
--            }
 +
++            if (cfg & EPIC_L_CFG_FILTER_EN) {
++                uint32_t filter = s->reg[(l->transformable ?
++                    SIFLI_EPIC_VL_FILTER : SIFLI_EPIC_L0_FILTER) / 4];
++                uint32_t rgb = (px.r << 16) | (px.g << 8) | px.b;
++
++                if (!(filter >> 24) && rgb == (filter & 0xffffff)) {
++                    continue;
++                }
+             }
 +            a = epic_layer_alpha(s, l, cfg, format, &px);
  
              epic_composite(dst, o_format, format, px, a);
          }
-@@ -878,10 +950,8 @@ static void epic_run(SifliEpicState *s)
+@@ -878,10 +962,8 @@ static void epic_run(SifliEpicState *s)
      /*
       * The colour the canvas is cleared to, which is also the fill colour: an
       * opaque fill programs no layer at all, just CANVAS_BG and this
@@ -339,7 +354,7 @@ index 214819f..8ff6393 100644
       */
      bool clear_canvas = !(bg & (EPIC_CANVAS_BG_BG_BLENDING_BYPASS |
                                  EPIC_CANVAS_BG_ALL_BLENDING_BYPASS));
-@@ -938,6 +1008,10 @@ static void epic_run(SifliEpicState *s)
+@@ -938,6 +1020,10 @@ static void epic_run(SifliEpicState *s)
              return;
          }
  
@@ -351,20 +366,24 @@ index 214819f..8ff6393 100644
              unsigned x;
  
 diff --git a/include/hw/display/sifli-epic.h b/include/hw/display/sifli-epic.h
-index d045d23..019729f 100644
+index d045d23..02e7808 100644
 --- a/include/hw/display/sifli-epic.h
 +++ b/include/hw/display/sifli-epic.h
-@@ -159,8 +159,8 @@ enum {
-  * CFG.FILTER_EN only ever accompanies the FILTER register's RGB, which the
-  * HAL uses to substitute a colour for the ones an A8/L8 source cannot carry
-  * (bf0_hal_epic.c:3128). It is not a resampling filter: no register selects
+@@ -155,13 +155,7 @@ enum {
+ #define EPIC_L_CFG_WIDTH_Msk        (0x1fffu << 16)
+ #define EPIC_L_CFG_ACTIVE           BIT(30)
+ #define EPIC_L_CFG_ALPHA_BLEND      BIT(31)
+-/*
+- * CFG.FILTER_EN only ever accompanies the FILTER register's RGB, which the
+- * HAL uses to substitute a colour for the ones an A8/L8 source cannot carry
+- * (bf0_hal_epic.c:3128). It is not a resampling filter: no register selects
 - * an interpolation kernel for the scaler, so a scaled VL layer is sampled
 - * nearest-neighbour.
-+ * an interpolation kernel for the scaler. Memory-layer scaling uses
-+ * bilinear sampling independently of this bit.
-  */
+- */
++/* CFG.FILTER_EN enables RGB colour-key rejection, not scaler interpolation. */
  #define EPIC_L_CFG_FILTER_EN        BIT(15)
  
+ /* Source pixel formats, from EPIC_L0_CFG_FMT_*. */
 diff --git a/include/hw/misc/sifli-sbus.h b/include/hw/misc/sifli-sbus.h
 index 7d02379..a0156b9 100644
 --- a/include/hw/misc/sifli-sbus.h

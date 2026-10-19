@@ -29,7 +29,6 @@
 
 
 #if LV_USE_GPU
-#include "lv_gpu_sifli_epic.h"
 
 static lv_res_t epic_cf_decoder_info(lv_img_decoder_t *decoder, const void *src, lv_img_header_t *header);
 static lv_res_t epic_cf_decoder_open(lv_img_decoder_t *decoder, lv_img_decoder_dsc_t *dsc);
@@ -75,9 +74,6 @@ static lv_res_t epic_cf_decoder_info(lv_img_decoder_t *decoder, const void *src,
  */
 static lv_res_t epic_cf_decoder_open(lv_img_decoder_t *decoder, lv_img_decoder_dsc_t *dsc)
 {
-    /* Let the built-in decoder expand packed alpha/indexed images for SW. */
-    if (!lv_disp_get_default() || !lv_gpu_is_enabled()) return LV_RES_INV;
-
     /*Open the file if it's a file*/
     if (dsc->src_type == LV_IMG_SRC_VARIABLE)
     {

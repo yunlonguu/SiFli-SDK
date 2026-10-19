@@ -18,7 +18,5 @@ typedef struct
 
 void lv_gpu_epic_ctx_init(lv_disp_drv_t *drv, lv_draw_ctx_t *draw_ctx);
 void lv_gpu_epic_ctx_deinit(lv_disp_drv_t *drv, lv_draw_ctx_t *draw_ctx);
-void lv_gpu_set_enable(bool en);
-bool lv_gpu_is_enabled(void);
 
 #endif /*_LV_GPU_SIFLI_EPIC_H*/

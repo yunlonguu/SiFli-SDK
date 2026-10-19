@@ -123,8 +123,6 @@ void lv_draw_sw_layer_blend(struct _lv_draw_ctx_t * draw_ctx, struct _lv_draw_la
     img.header.w = lv_area_get_width(draw_ctx->buf_area);
     img.header.h = lv_area_get_height(draw_ctx->buf_area);
     img.header.cf = layer_sw_ctx->has_alpha ? LV_IMG_CF_TRUE_COLOR_ALPHA : LV_IMG_CF_TRUE_COLOR;
-    img.data_size = img.header.w * img.header.h *
-                    (layer_sw_ctx->has_alpha ? LV_IMG_PX_SIZE_ALPHA_BYTE : sizeof(lv_color_t));
     lv_img_cache_invalidate_src(&img);
 
     /*Restore the original draw_ctx*/
