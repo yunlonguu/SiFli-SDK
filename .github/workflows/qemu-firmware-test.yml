@@ -150,7 +150,10 @@ jobs:
       - name: Install screenshot comparison dependency
         if: startsWith(matrix.name, 'lvgl_v8_')
         run: |
-          uv pip install --python python3 --system -r tools/qemu/requirements.txt
+          uv venv /tmp/qemu-test-venv
+          uv pip install --python /tmp/qemu-test-venv/bin/python -r tools/qemu/requirements.txt
+          echo "/tmp/qemu-test-venv/bin" >> "$GITHUB_PATH"
+          source /tmp/qemu-test-venv/bin/activate
           python3 -m unittest discover -s tests -p test_qemu_screenshot.py
 
       - name: Build QEMU with hardware comparison fixes
