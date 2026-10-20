@@ -168,7 +168,7 @@ def compare_reference(shots, reference, output_dir, tolerance=0):
 # ---------------------------------------------------------------- QEMU 驱动
 class QemuSession:
     def __init__(self, qemu, kernel, serial_log, ppm_dir, timeout=60, machine='sf32lb52x',
-                 serial_input=False, extra_devices=()):
+                 serial_input=False, extra_devices=(), debug_guest_errors=False):
         self.deadline = time.monotonic() + timeout
         self.serial_log = serial_log
         self.buffer = b''
@@ -194,6 +194,8 @@ class QemuSession:
         ]
         for device in extra_devices:
             cmd.extend(['-device', device])
+        if debug_guest_errors:
+            cmd.extend(['-d', 'guest_errors'])
         with open(serial_log + '.qemu.log', 'wb') as stderr:
             self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr)
         self.sock = None
@@ -302,6 +304,7 @@ def check_serial(serial_log, fatal_patterns=None):
     fatal_patterns = fatal_patterns or [
         'Assertion failed', 'assert', 'HardFault', 'hardfault',
         'fatal error', 'FATAL', 'draw_core timeout', 'panic', 'Oops',
+        'hard fault', 'mem manage fault',
     ]
     if not os.path.exists(serial_log):
         return False, "serial log 不存在"

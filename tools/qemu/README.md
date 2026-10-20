@@ -7,10 +7,14 @@
 
 ## 当前检查范围
 
+CI 仅运行 SF32LB52 图形测试：NAND 板 `sf32lb52-lcd_a128r16` 和
+NOR 板 `sf32lb52-lchspi-ulp`，不运行 Hello World 等非图形启动测试。
+
 | 任务 | push | 每日/手动运行 |
 | --- | --- | --- |
 | `lvgl_v8_examples` | 静态页面参考图比较 + 触摸左右拖动及截图断言 | 同左 |
 | `lvgl_v8_demos` | 动画冒烟检查 + 全部 96 个固定场景截图比较 | 额外等待完整 benchmark CSV 报告 |
+| `lvgl_v8_demos_hardware` | NOR 板全部 96 个固定场景与硬件参考图比较 | 同左 |
 
 截图比较不使用 OCR，也不使用整体相似度代替像素断言。每个像素的 R/G/B
 差值均不得超过 `--pixel-tolerance`（默认 0）；任一像素超差即失败。
@@ -33,11 +37,11 @@ CI 逐张比较这些结果可以检测后续变化，但不会把现存异常�
 
 `LV_DEMO_QEMU_SNAPSHOT` 默认关闭，普通例程构建不启用截图配置。
 CI 的两个 demo 任务通过 `build_visual_firmware.py` 临时注入配置：关闭性能监视器，
-开启截图命令、压缩字体和透明图层，并选择 `LCD_FB_USING_NONE` 和
+开启截图命令和压缩字体，并选择 `LCD_FB_USING_NONE` 和
 `LV_FB_ONE_SCREEN_SIZE`。板级测试配置最后加载，两个 Kconfig choice 会替换
-默认的 AUTO 和非整屏模式，不会同时启用。SDK 的绘制/解码修正保存在
-`patches/sdk-visual-test.patch`，只在此包装脚本构建期间应用。
-正常结束、构建失败或 Ctrl-C 时恢复原始源码和板级 proj.conf；
+默认的 AUTO 和非整屏模式。构建不再修改 SDK 源码或应用 SDK 补丁，
+不再强制启用 RGB565 透明图层，也不新增软件回退。
+正常结束、构建失败或 Ctrl-C 时恢复板级 proj.conf；
 强制终止进程（如 SIGKILL）无法保证恢复。不要在同一工作区同时运行普通构建。
 
 硬件采集与 CI 必须使用相同的测试构建方式：
@@ -48,7 +52,11 @@ python3 tools/qemu/build_visual_firmware.py --board sf32lb52-lchspi-ulp -j8
 ```
 
 测试 ELF 和生成的 rtconfig.h 保留在原来的 build 目录。普通固件请重新运行普通 SCons 构建。
-这套参考图验证的是应用测试补丁后的固件；它不代表未打补丁的 SDK 已修复这些绘制问题。
+注意：仓库现存 demo/硬件参考图来自旧的补丁固件，尚未重新采集，
+不能据此宣称原版 EPIC 固件通过。重新采集同一测试 ELF 的真实硬件输出后，
+才能更新硬件基线并恢复有效的 CI 图像判定；不得用 QEMU 图像代替硬件基线。
+当前测试目标是 SDK 原有 EPIC 开启路径（包括原本已有的软件处理），
+不表示全部像素都由 EPIC 执行，也不表示空白场景已被硬件支持。
 测试命令 `lv_snapshot N` 只投递请求；LVGL 主线程清理上一场景并重建指定场景。
 沿用 demo 的固定随机数序列，位置取垂直行程中点，圆弧终点固定为 180°，
 文字截图只显示一份完整的多行样本，限制宽度以避免重叠和越界；性能动画仍保留全部对象。
@@ -70,7 +78,7 @@ CI 不使用 `--record`，缺图、场景清单变更、尺寸异常、画面不
 
 ## 软件、QEMU EPIC 与硬件对照
 
-使用同一 ELF，串口执行 `lv_snapshot N epic` 或 `lv_snapshot N sw`。
+使用同一 ELF，串口执行 `lv_snapshot N epic`，不再支持切换软件后端。
 等待 `QEMU_SNAPSHOT N READY` 后画面保持不动；`QEMU_RENDERER` 标识当前绘制后端。
 不带后端参数时默认 EPIC。软件模式也会清空图片缓存，让内置解码器展开普通 Alpha/索引图片。
 该模式用于本例程的标准 LVGL 资源，不能将 EPIC 专用资源的软件显示作为正确性标准。
@@ -261,6 +269,53 @@ and per-scene pass/fail results. The report uploads even on failure.
 The hardware reference is a draw-buffer export, not a camera photograph.
 The firmware is rebuilt in CI, so future source/toolchain changes may change its
 ELF hash or rendered pixels; the built ELF and rtconfig.h are included in artifacts.
+
+## Watch / EZIP 接入（实验性诊断）
+
+`watch` 保留 `src/resource/images/SConscript` 的原始压缩资源：普通图、
+EZIP 图和 large_ezip 分块图不改为未压缩图。固定版本 QEMU
+`0febf2dcbf7c8aaf668acdcb861afea1446040fb` 的 EZIP 模型通过宿主机厂商工具
+解码，因此运行时也需要 SDK 的 `tools/png2ezip/ezip_mac`（macOS）或
+`ezip_linux`（Linux），仅编译时安装工具不够。仓库内旧 QEMU 二进制不作为
+watch 的验证依据。
+
+在 SDK 根目录构建并采集启动后的蜂窝菜单：
+
+```bash
+source ./export.sh
+python3 tools/qemu/build_visual_firmware.py --example watch --board sf32lb52-lcd_a128r16
+python3 tools/qemu/watch_visual_check.py \
+  --qemu /Volumes/TB/qemu-sifli-source/build/qemu-system-arm \
+  --kernel example/multimedia/lvgl/watch/project/build_sf32lb52-lcd_a128r16_hcpu/main.elf \
+  --ezip-tool tools/png2ezip/ezip_mac \
+  --capture-only --output watch-visual
+```
+
+NOR 改用 `--board sf32lb52-lchspi-ulp` 及其对应 ELF，并增加：
+
+```bash
+--machine 'sf32lb52x,flash-base=0x12020000,flash-size=33554432,psram-size=8388608' \
+--device i2c-echo,bus=i2c2,address=0x49
+```
+
+构建脚本临时关闭 LCD framebuffer、性能浮层和页面切换动画，保留新 EPIC API
+及双分块 LVGL 缓冲，结束后恢复配置文件。真机比较必须烧录同一份测试 ELF。
+检查脚本保存两张 PNG/PPM、UART/QEMU 日志和 `report.json`，检查尺寸、颜色数、
+两次采样稳定性，以及 FreeType、EZIP、EPIC 错误；错误会使命令返回非零。
+`--capture-only` 仅用于诊断，报告始终标记 `visual_verified=false`。
+
+已有经过审核的同板、同固件、同分辨率真机菜单 PNG 时，将 `--capture-only`
+替换为 `--reference /absolute/path/watch-menu.png`，执行零容差像素比较并保存差异图。
+当前 `hardware_visual_check.py` 的 `lv_snapshot` 协议仅支持 benchmark，不能用于
+导出 watch 菜单；watch 的真机 framebuffer 导出尚未接入。不要把模拟器截图直接
+当成真机目标图，也不要用相机照片进行零容差比较。
+
+当前本地 NAND 实测发现：Tiny FreeType 初始化返回 `-1`，与 QEMU 芯片标识
+寄存器值不满足库内检查有关；菜单有白块及裁剪异常，尚未证明 EZIP/EPIC
+整体渲染正确。旧 EPIC 路径也出现 hard fault。因此尚未建立 watch 正确性基线。
+GitHub Actions 手动运行时勾选 `watch`，才启用 NOR/NAND 两个诊断项；它们会
+如实报告这些问题，默认每日任务不启用。修复字体和画面、补齐真机基线后，
+才能将其提升为常规图形回归。目前覆盖菜单启动，不覆盖动态表盘和交互。
 
 ## CI storage and caching policy
 

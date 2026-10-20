@@ -4,13 +4,10 @@
 #include "rthw.h"
 #include <stdlib.h>
 #include "lv_demos.h"
-#include "lv_draw_sw.h"
-#include "lv_gpu_sifli_epic.h"
 #include <string.h>
 
 /* The shell only posts a request; LVGL objects belong to the main thread. */
 static volatile int pending_scene = -1;
-static bool pending_gpu = true;
 static volatile bool pending_dump;
 static bool snapshot_ready;
 
@@ -20,12 +17,11 @@ static void lv_snapshot(int argc, char **argv)
     long scene;
     rt_base_t level;
 
-    bool gpu = true;
     if (argc < 2 || argc > 3) return;
-    if (argc == 3)
+    if (argc == 3 && strcmp(argv[2], "epic") != 0)
     {
-        if (strcmp(argv[2], "sw") == 0) gpu = false;
-        else if (strcmp(argv[2], "epic") != 0) return;
+        rt_kprintf("QEMU_SNAPSHOT INVALID renderer: only epic is supported\n");
+        return;
     }
     scene = strtol(argv[1], &end, 10);
     if (*end || scene < 0 || scene > 32767) return;
@@ -33,12 +29,11 @@ static void lv_snapshot(int argc, char **argv)
     level = rt_hw_interrupt_disable();
     if (pending_scene < 0)
     {
-        pending_gpu = gpu;
         pending_scene = (int)scene;
     }
     rt_hw_interrupt_enable(level);
 }
-MSH_CMD_EXPORT(lv_snapshot, Freeze benchmark scene: N [epic|sw]);
+MSH_CMD_EXPORT(lv_snapshot, Freeze benchmark scene: N [epic]);
 
 static void lv_frame_dump(void)
 {
@@ -104,10 +99,8 @@ static void dump_frame(void)
 void lv_demo_qemu_poll(void)
 {
     int scene;
-    bool gpu;
     rt_base_t level = rt_hw_interrupt_disable();
     scene = pending_scene;
-    gpu = pending_gpu;
     pending_scene = -1;
     bool dump = pending_dump;
     pending_dump = false;
@@ -115,13 +108,12 @@ void lv_demo_qemu_poll(void)
 
     if (scene >= 0)
     {
-        lv_gpu_set_enable(gpu);
         lv_img_cache_invalidate_src(NULL);
         bool ok = lv_demo_benchmark_snapshot(scene);
         lv_refr_now(NULL);
         snapshot_ready = ok;
         rt_kprintf("\nQEMU_SNAPSHOT %d %s\n", scene, ok ? "READY" : "INVALID");
-        rt_kprintf("QEMU_RENDERER %s\n", gpu ? "EPIC" : "SW");
+        rt_kprintf("QEMU_RENDERER EPIC\n");
     }
     if (dump) dump_frame();
 }

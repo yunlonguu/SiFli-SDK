@@ -62,7 +62,7 @@ def main():
     parser.add_argument('--machine', default='sf32lb52x')
     parser.add_argument('--device', action='append', default=[], help='Additional QEMU device, repeatable')
     parser.add_argument('--timeout', type=int, default=180)
-    parser.add_argument('--renderer', choices=('epic', 'sw'), default='epic')
+    parser.add_argument('--renderer', choices=('epic',), default='epic')
     parser.add_argument('--record', action='store_true', help='Create candidates in an empty directory; never used in CI')
     args = parser.parse_args()
     names = benchmark_cases(args.source)

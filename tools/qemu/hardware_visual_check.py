@@ -99,7 +99,7 @@ def main():
     parser.add_argument('--baud', type=int, default=1000000)
     parser.add_argument('--source', required=True)
     parser.add_argument('--scenes', default='32,38,70,84', help='Zero-based scene numbers')
-    parser.add_argument('--renderer', choices=('epic', 'sw', 'both'), default='both')
+    parser.add_argument('--renderer', choices=('epic',), default='epic')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--settle', type=float, default=20, help='Startup allowance after opening UART')
     parser.add_argument('--timeout', type=float, default=90, help='Deadline per scene, including UART export')
@@ -115,7 +115,7 @@ def main():
     if args.output.exists() and any(args.output.iterdir()) and not args.resume:
         parser.error('Output must be empty to preserve previous captures')
     args.output.mkdir(parents=True, exist_ok=True)
-    renderers = ('epic', 'sw') if args.renderer == 'both' else (args.renderer,)
+    renderers = (args.renderer,)
     console = Console(args.bridge, args.port, args.baud, args.output / 'serial.log')
     try:
         # Opening the bridge can release the board's reset line. Drain boot logs.

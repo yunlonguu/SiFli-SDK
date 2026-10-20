@@ -10,9 +10,15 @@ on:
       - '.github/workflows/qemu-firmware-test.yml'
       - 'example/**'
       - 'tools/qemu/**'
+      - 'tools/png2ezip/**'
       - '.gitmodules'
       - '!**/*.md'
   workflow_dispatch:
+    inputs:
+      watch:
+        description: 'Run experimental watch EZIP diagnostics (currently exposes rendering/font failures)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,47 +30,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ============ 例程 × 板子 组合 ============
+          # ===== SF32LB52 NOR/NAND 图形例程组合 =====
           # project: scons 执行目录（--board 在这里跑）
           # ===========================================
-          - name: hello_world
-            project: example/get-started/hello_world/rtt/project
+          - name: lvgl_v8_watch_nand
+            project: example/multimedia/lvgl/watch/project
             board: sf32lb52-lcd_a128r16
             qemu_machine: sf32lb52x
+            watch: true
             run_assert: |
-              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
-              echo "===== QEMU output ====="
-              cat qemu.log
-              echo "===== assertions ====="
-              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
-              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
-              echo "PASS: hello_world booted to shell in QEMU"
+              python3 tools/qemu/watch_visual_check.py \
+                --qemu /tmp/qemu-hardware/build/qemu-system-arm \
+                --machine "$QEMU_MACHINE" --kernel "$ELF" \
+                --ezip-tool tools/png2ezip/ezip_linux \
+                --capture-only --output watch-visual
 
-          - name: hello_world
-            project: example/get-started/hello_world/rtt/project
+          - name: lvgl_v8_watch_nor
+            project: example/multimedia/lvgl/watch/project
             board: sf32lb52-lchspi-ulp
-            qemu_machine: "sf32lb52x,flash-base=0x12020000"
+            qemu_machine: "sf32lb52x,flash-base=0x12020000,flash-size=33554432,psram-size=8388608"
+            watch: true
             run_assert: |
-              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
-              echo "===== QEMU output ====="
-              cat qemu.log
-              echo "===== assertions ====="
-              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
-              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
-              echo "PASS: hello_world booted to shell in QEMU"
-
-          - name: hello_world
-            project: example/get-started/hello_world/rtt/project
-            board: sf32lb52-lcd_n16r8
-            qemu_machine: "sf32lb52x,flash-base=0x12020000"
-            run_assert: |
-              timeout 60 tools/qemu/qemu-system-arm -M "$QEMU_MACHINE" -nographic -kernel "$ELF" > qemu.log 2>&1 || true
-              echo "===== QEMU output ====="
-              cat qemu.log
-              echo "===== assertions ====="
-              grep -q "Hello world!" qemu.log || { echo "FAIL: missing 'Hello world!'"; exit 1; }
-              grep -q "msh />"       qemu.log || { echo "FAIL: missing 'msh />'"; exit 1; }
-              echo "PASS: hello_world booted to shell in QEMU"
+              python3 tools/qemu/watch_visual_check.py \
+                --qemu /tmp/qemu-hardware/build/qemu-system-arm \
+                --machine "$QEMU_MACHINE" --kernel "$ELF" \
+                --device i2c-echo,bus=i2c2,address=0x49 \
+                --ezip-tool tools/png2ezip/ezip_linux \
+                --capture-only --output watch-visual
 
           - name: lvgl_v8_demos
             project: example/multimedia/lvgl/lvgl_v8_demos/project
@@ -125,23 +117,30 @@ jobs:
                 --qemu hardware-actual --output hardware-comparison
 
     steps:
+      # Watch diagnostics run only when explicitly selected in workflow_dispatch.
       - name: Checkout (with submodules)
+        if: (!matrix.watch || inputs.watch == true)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Setup uv
+        if: (!matrix.watch || inputs.watch == true)
         uses: astral-sh/setup-uv@v3
 
       - name: Install SDK toolchain (arm-none-eabi-gcc, scons)
+        if: (!matrix.watch || inputs.watch == true)
         run: ./install.sh --profile default
 
       - name: Build firmware
+        if: (!matrix.watch || inputs.watch == true)
         run: |
           source ./export.sh
           which scons arm-none-eabi-gcc
           arm-none-eabi-gcc --version | head -1
-          if [[ "${{ matrix.name }}" == lvgl_v8_demos* ]]; then
+          if [[ "${{ matrix.watch }}" == "true" ]]; then
+            python3 tools/qemu/build_visual_firmware.py --example watch --board=${{ matrix.board }} -j$(nproc)
+          elif [[ "${{ matrix.name }}" == lvgl_v8_demos* ]]; then
             python3 tools/qemu/build_visual_firmware.py --board=${{ matrix.board }} -j$(nproc)
           else
             cd "${{ matrix.project }}"
@@ -149,6 +148,7 @@ jobs:
           fi
 
       - name: Install QEMU runtime libraries
+        if: (!matrix.watch || inputs.watch == true)
         run: |
           sudo apt-get update
           sudo apt-get install -y libsdl2-2.0-0 libsndio7.0 libpixman-1-0 libglib2.0-0 libnuma1
@@ -156,7 +156,7 @@ jobs:
           ldd tools/qemu/qemu-system-arm | grep "not found" || echo "all shared libs resolved"
 
       - name: Install screenshot comparison dependency
-        if: startsWith(matrix.name, 'lvgl_v8_')
+        if: startsWith(matrix.name, 'lvgl_v8_') && (!matrix.watch || inputs.watch == true)
         run: |
           uv venv /tmp/qemu-test-venv
           uv pip install --python /tmp/qemu-test-venv/bin/python -r tools/qemu/requirements.txt
@@ -165,7 +165,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_qemu_screenshot.py
 
       - name: Cache hardware QEMU executable
-        if: matrix.name == 'lvgl_v8_demos_hardware'
+        if: (matrix.name == 'lvgl_v8_demos_hardware' || matrix.watch) && (!matrix.watch || inputs.watch == true)
         id: hardware-qemu-cache
         uses: actions/cache@v4
         with:
@@ -173,7 +173,7 @@ jobs:
           key: hardware-qemu-${{ runner.os }}-${{ runner.arch }}-0febf2dcbf7c-v1-${{ hashFiles('.github/workflows/qemu-firmware-test.yml') }}
 
       - name: Build QEMU with hardware comparison fixes
-        if: matrix.name == 'lvgl_v8_demos_hardware' && steps.hardware-qemu-cache.outputs.cache-hit != 'true'
+        if: (matrix.name == 'lvgl_v8_demos_hardware' || matrix.watch) && steps.hardware-qemu-cache.outputs.cache-hit != 'true' && (!matrix.watch || inputs.watch == true)
         run: |
           sudo apt-get install -y ninja-build pkg-config python3-venv libglib2.0-dev libpixman-1-dev
           git clone --filter=blob:none --no-checkout https://github.com/yunlonguu/qemu.git /tmp/qemu-hardware
@@ -184,6 +184,7 @@ jobs:
           ninja -j2 qemu-system-arm
 
       - name: Run firmware in QEMU and assert
+        if: (!matrix.watch || inputs.watch == true)
         timeout-minutes: 25
         run: |
           chmod +x tools/qemu/qemu-system-arm
@@ -193,7 +194,7 @@ jobs:
           ${{ matrix.run_assert }}
 
       - name: Upload QEMU log & screenshots
-        if: always()
+        if: always() && (!matrix.watch || inputs.watch == true)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-${{ matrix.board }}
@@ -207,19 +208,21 @@ jobs:
             qemu-touch.log*
             touch-visual/
             hardware-comparison/
+            watch-visual/
             ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/rtconfig.h
           if-no-files-found: ignore
           retention-days: ${{ job.status == 'success' && 14 || 90 }}
           compression-level: 6
 
       - name: Upload firmware for failure diagnosis
-        if: failure()
+        if: failure() && (!matrix.watch || inputs.watch == true)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-${{ matrix.board }}-elf
           path: ${{ matrix.project }}/build_${{ matrix.board }}_hcpu/main.elf
           if-no-files-found: ignore
           retention-days: 90
+
 
   cleanup-success-artifacts:
     needs: qemu-test

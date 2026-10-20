@@ -35,6 +35,26 @@ class ScreenshotTests(unittest.TestCase):
         with Image.open(self.output / 'shot_0_actual.png') as image:
             self.assertEqual(image.tobytes(), self.pixels)
 
+    def test_watch_fault_spelling_is_fatal(self):
+        log = self.output / 'serial.log'
+        for message in ('hard fault on thread: app_watch', 'mem manage fault:'):
+            log.write_text(message)
+            self.assertFalse(CHECK.check_serial(str(log))[0])
+
+    def test_watch_rendering_errors_are_not_smoke_success(self):
+        import sys
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location(
+            'watch_visual_check', Path(__file__).resolve().parents[1] / 'tools/qemu/watch_visual_check.py')
+        watch = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'headless_check': CHECK}):
+            spec.loader.exec_module(watch)
+        errors = watch.rendering_errors(
+            'boot OK\nError in FT_Init_FreeType: -1\n',
+            'NVIC: Bad read offset\nsifli-ezip: decoder produced no output\n')
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(watch.rendering_errors('boot OK', 'NVIC: Bad read offset'), [])
+
     def test_benchmark_ignores_disabled_scenes(self):
         source = self.output / 'benchmark.c'
         source.write_text('''static scene_dsc_t scenes[] = {
