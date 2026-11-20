@@ -13,6 +13,7 @@
 
 #if LV_USE_DRAW_EPIC
 #include <string.h>
+#include "app_mem.h"
 
 #include "lv_epic_utils.h"
 
@@ -42,6 +43,8 @@ typedef enum
 {
     RL_RESOURCE_LAYER_DRAW_BUF, // Sub-layer draw buffer
     RL_RESOURCE_GLYPH_DATA, // Glyph data
+    RL_RESOURCE_IMAGE_DATA, // Compressed image data
+    RL_RESOURCE_TRANSFORM, // Image transform matrix
 } render_list_resource_type_t;
 
 // Resource linked list node - used for deferred release
@@ -77,6 +80,9 @@ typedef struct
     uint32_t submit_seq;    // Submit sequence number (debug)
     drv_epic_render_list_t last_created;
     uint8_t pending_submit;     // Pending submit flag (leak detection)
+#ifdef LV_USE_PARTIAL_REFRESH
+    lv_area_t refresh_area;
+#endif
 } render_list_frame_state_t;
 
 // Sub-layer level state
@@ -107,6 +113,9 @@ typedef struct
  **********************/
 static uint8_t initialized = 0;
 static render_list_context_t render_list_ctx;
+static lv_layer_t *display_root_layer;
+static lv_layer_t *offscreen_layer_inflight;
+static lv_layer_t *offscreen_layer_completed;
 
 /**********************
  *      MACROS
@@ -136,6 +145,7 @@ void render_list_set_display_pixel_align(lv_display_t *disp, uint32_t pixel_alig
     }
 
     render_list_ctx.display_cache.disp = disp;
+    display_root_layer = disp->layer_head;
     render_list_ctx.display_cache.pixel_align = (pixel_align != 0U) ? pixel_align : DEFAULT_PIXEL_ALIGN;
 }
 
@@ -366,6 +376,16 @@ bool lv_draw_epic_retain_glyph_data(void *glyph_data)
     return render_list_retain_resource(glyph_data, RL_RESOURCE_GLYPH_DATA, "glyph data");
 }
 
+bool lv_draw_epic_retain_image_data(void *image_data)
+{
+    return render_list_retain_resource(image_data, RL_RESOURCE_IMAGE_DATA, "image data");
+}
+
+bool lv_draw_epic_retain_transform(sifli_matrix_3x3_t *matrix)
+{
+    return render_list_retain_resource(matrix, RL_RESOURCE_TRANSFORM, "transform matrix");
+}
+
 // Release deferred resources
 void lv_draw_epic_release_deferred_resources(void)
 {
@@ -384,6 +404,10 @@ void lv_draw_epic_release_deferred_resources(void)
             if (resource_list->type == RL_RESOURCE_LAYER_DRAW_BUF)
             {
                 lv_draw_buf_destroy((lv_draw_buf_t *)resource_list->resource);
+            }
+            else if (resource_list->type == RL_RESOURCE_IMAGE_DATA)
+            {
+                app_cache_free(resource_list->resource);
             }
             else
             {
@@ -465,7 +489,14 @@ int render_list_release_by_handle(drv_epic_render_list_t rl)
     return 0;
 }
 
-// Sub-layer render done callback (called by EPIC hardware), releases RL when last slice completes
+// Identify layers outside the display root, including snapshot descendants.
+bool render_list_is_offscreen_layer(const lv_layer_t *layer)
+{
+    if (layer == NULL) return false;
+    while (layer->parent != NULL) layer = layer->parent;
+    return layer != display_root_layer;
+}
+
 static void sub_layer_render_done_callback(drv_epic_render_list_t rl, EPIC_LayerConfigTypeDef *p_dst,
                                            void *usr_data, uint32_t last)
 {
@@ -481,8 +512,36 @@ static void sub_layer_render_done_callback(drv_epic_render_list_t rl, EPIC_Layer
     render_list_release_by_handle(rl);
 }
 
+static void offscreen_layer_render_done_callback(drv_epic_render_list_t rl, EPIC_LayerConfigTypeDef *p_dst,
+                                                  void *usr_data, uint32_t last)
+{
+    lv_layer_t *layer = (lv_layer_t *)usr_data;
+    LV_UNUSED(p_dst);
+    if (!last) return;
+
+    render_list_release_by_handle(rl);
+    rt_enter_critical();
+    RT_ASSERT(offscreen_layer_inflight == layer);
+    RT_ASSERT(offscreen_layer_completed == NULL);
+    offscreen_layer_inflight = NULL;
+    offscreen_layer_completed = layer;
+    rt_exit_critical();
+    lv_draw_dispatch_request();
+}
+
+static bool offscreen_layer_has_pending_work(void)
+{
+    bool pending;
+    rt_enter_critical();
+    pending = offscreen_layer_inflight != NULL || offscreen_layer_completed != NULL;
+    rt_exit_critical();
+    return pending;
+}
+
 // Internal submit function: build EPIC message and submit, supports render-to-buffer or direct-to-LCD
-static int render_list_submit_internal(drv_epic_render_list_t rl, drv_epic_render_buf *render_buf, uint32_t render_type)
+static int render_list_submit_internal(drv_epic_render_list_t rl, drv_epic_render_buf *render_buf,
+                                       uint32_t render_type, drv_epic_render_cb render_done_cb,
+                                       void *render_user_data)
 {
     if (rl == NULL || render_buf == NULL)
     {
@@ -498,8 +557,8 @@ static int render_list_submit_internal(drv_epic_render_list_t rl, drv_epic_rende
     {
         msg.id = EPIC_MSG_RENDER_TO_BUF;
         msg.content.r2b.dst_area = render_buf->area;
-        msg.content.r2b.usr_data = render_buf->data;
-        msg.content.r2b.done_cb = sub_layer_render_done_callback;
+        msg.content.r2b.usr_data = render_user_data;
+        msg.content.r2b.done_cb = render_done_cb ? render_done_cb : sub_layer_render_done_callback;
     }
     else
     {
@@ -525,6 +584,12 @@ static int render_list_submit_internal(drv_epic_render_list_t rl, drv_epic_rende
         msg.content.rd.area.y0 = disp->offset_y;
         msg.content.rd.area.x1 = (int16_t)(disp->offset_x + disp->hor_res - 1);
         msg.content.rd.area.y1 = (int16_t)(disp->offset_y + disp->ver_res - 1);
+#ifdef LV_USE_PARTIAL_REFRESH
+        msg.content.rd.area.x0 = render_list_ctx.frame.refresh_area.x1 + disp->offset_x;
+        msg.content.rd.area.y0 = render_list_ctx.frame.refresh_area.y1 + disp->offset_y;
+        msg.content.rd.area.x1 = render_list_ctx.frame.refresh_area.x2 + disp->offset_x;
+        msg.content.rd.area.y1 = render_list_ctx.frame.refresh_area.y2 + disp->offset_y;
+#endif
 
         msg.content.rd.usr_data = disp;
         msg.content.rd.partial_done_cb = main_frame_render_done_callback;
@@ -543,29 +608,31 @@ static int render_list_submit_internal(drv_epic_render_list_t rl, drv_epic_rende
     return 0;
 }
 
-// Check if layer has unfinished draw tasks (skip specified task)
-static bool layer_has_pending_tasks(const lv_layer_t *layer, const lv_draw_task_t *skip_task)
+/* Collect a consecutive EPIC batch in draw order. Unlike the generic task
+ * picker, this also permits tasks after a queued full-screen background.
+ * Stop at another unit's task or a blocked dependency; never reorder them.
+ */
+static lv_draw_task_t *offscreen_get_next_task(lv_layer_t *layer, lv_draw_unit_t *draw_unit)
 {
-    if (layer == NULL) return false;
-
-    const lv_draw_task_t *t = layer->draw_task_head;
+    lv_draw_task_t *t = layer->draw_task_head;
     while (t)
     {
-        if (t != skip_task &&
-            (t->state == LV_DRAW_TASK_STATE_QUEUED ||
-             t->state == LV_DRAW_TASK_STATE_WAITING ||
-             t->state == LV_DRAW_TASK_STATE_IN_PROGRESS))
+        if (t->state == LV_DRAW_TASK_STATE_FINISHED ||
+            (t->state == LV_DRAW_TASK_STATE_QUEUED && t->draw_unit == draw_unit))
         {
-            return true;
+            t = t->next;
+            continue;
         }
-        t = t->next;
+        if (t->state == LV_DRAW_TASK_STATE_WAITING &&
+            t->preferred_draw_unit_id == DRAW_UNIT_ID_EPIC)
+            return t;
+        return NULL;
     }
-
-    return false;
+    return NULL;
 }
 
-// Flush sub-layer RL: submit sub-layer render list to EPIC when conditions are met
-static void render_list_flush_layer(lv_draw_epic_unit_t *u, bool force)
+// Submit the collected list at a batch/dependency boundary.
+static void render_list_flush_layer(void)
 {
     drv_epic_render_list_t rl = render_list_ctx.layer.active.rl;
 
@@ -574,39 +641,36 @@ static void render_list_flush_layer(lv_draw_epic_unit_t *u, bool force)
         return;
     }
 
-    if (!force)
+    /* The completion callback can reset the active context. Keep the owner
+     * locally until its queued tasks have been completed below. */
+    lv_layer_t *owner = render_list_ctx.layer.owner;
+    bool offscreen = render_list_is_offscreen_layer(owner);
+    int ret;
+    if (offscreen)
     {
-        if (u == NULL || !u->is_sub_layer_task)
-        {
-            return;
-        }
-
-        lv_draw_task_t *task = u->task_act;
-        lv_layer_t *layer = task ? task->target_layer : NULL;
-        if (layer == NULL || layer->parent == NULL)
-        {
-            return;
-        }
-
-        if (render_list_ctx.layer.owner != layer)
-        {
-            return;
-        }
-
-        if (!layer->all_tasks_added)
-        {
-            return;
-        }
-
-        if (layer_has_pending_tasks(layer, task))
-        {
-            return;
-        }
+        rt_enter_critical();
+        RT_ASSERT(offscreen_layer_inflight == NULL);
+        offscreen_layer_inflight = owner;
+        rt_exit_critical();
+        ret = render_list_submit_internal(rl, &render_list_ctx.layer.active.buf,
+                                          EPIC_MSG_RENDER_TO_BUF,
+                                          offscreen_layer_render_done_callback, owner);
+        RT_ASSERT(ret == 0);
     }
-
-    int ret = render_list_submit_internal(rl, &render_list_ctx.layer.active.buf, EPIC_MSG_RENDER_TO_BUF);
+    else
+    {
+        ret = render_list_submit_internal(rl, &render_list_ctx.layer.active.buf,
+                                          EPIC_MSG_RENDER_TO_BUF, sub_layer_render_done_callback, NULL);
+    }
     if (ret != 0)
     {
+        if (offscreen)
+        {
+            rt_enter_critical();
+            if (offscreen_layer_inflight == owner)
+                offscreen_layer_inflight = NULL;
+            rt_exit_critical();
+        }
         LV_LOG_ERROR("EPIC: Failed to submit sub-layer render list, ret=%d\n", ret);
         render_list_release_by_handle(rl);
         return;
@@ -615,7 +679,7 @@ static void render_list_flush_layer(lv_draw_epic_unit_t *u, bool force)
     render_list_reset_layer_active();
 }
 
-// Finish current draw task: flush sub-layer, mark finished, request next dispatch
+// Offscreen tasks stay queued until their render-to-buffer list is submitted.
 static void finish_current_task(lv_draw_epic_unit_t *u)
 {
     if (u == NULL || u->task_act == NULL)
@@ -623,7 +687,8 @@ static void finish_current_task(lv_draw_epic_unit_t *u)
         return;
     }
 
-    u->task_act->state = LV_DRAW_TASK_STATE_FINISHED;
+    u->task_act->state = render_list_is_offscreen_layer(u->task_act->target_layer) ?
+                        LV_DRAW_TASK_STATE_QUEUED : LV_DRAW_TASK_STATE_FINISHED;
     u->is_sub_layer_task = false;
     u->task_act = NULL;
 
@@ -699,6 +764,10 @@ int render_list_create_main_frame(lv_display_t *disp)
     }
 
     render_list_ctx.frame.disp = disp;
+#ifdef LV_USE_PARTIAL_REFRESH
+    /* lv_lcd.c has merged dirty areas before any draw tasks are generated. */
+    render_list_ctx.frame.refresh_area = disp->inv_areas[0];
+#endif
     render_list_ctx.frame.pixel_align = render_list_get_display_pixel_align(disp);
     render_list_set_released_flag(render_list_ctx.frame.active.rl, 0U);
 
@@ -737,7 +806,8 @@ int render_list_submit_main_frame(void)
         render_list_ctx.frame.pending_submit = 0;
     }
 
-    int ret = render_list_submit_internal(submit_rl, &render_list_ctx.frame.active.buf, EPIC_MSG_RENDER_DRAW);
+    int ret = render_list_submit_internal(submit_rl, &render_list_ctx.frame.active.buf,
+                                          EPIC_MSG_RENDER_DRAW, NULL, NULL);
 
     if (ret == 0)
     {
@@ -903,10 +973,51 @@ static int32_t dispatch(lv_draw_unit_t *draw_unit, lv_layer_t *layer)
 
     lv_draw_epic_release_deferred_resources();
 
-    lv_draw_task_t *t = lv_draw_get_next_available_task(layer, NULL, DRAW_UNIT_ID_EPIC);
+    bool offscreen = render_list_is_offscreen_layer(layer);
+    if (offscreen)
+    {
+        bool completed = false;
+        bool another_layer_inflight;
+        rt_enter_critical();
+        if (offscreen_layer_completed == layer)
+        {
+            offscreen_layer_completed = NULL;
+            completed = true;
+        }
+        another_layer_inflight = offscreen_layer_inflight != NULL || offscreen_layer_completed != NULL;
+        rt_exit_critical();
+
+        if (completed)
+        {
+            for (lv_draw_task_t *pending = layer->draw_task_head; pending; pending = pending->next)
+            {
+                if (pending->state == LV_DRAW_TASK_STATE_QUEUED &&
+                    pending->preferred_draw_unit_id == DRAW_UNIT_ID_EPIC)
+                    pending->state = LV_DRAW_TASK_STATE_FINISHED;
+            }
+        }
+        else if (another_layer_inflight)
+        {
+            /* Keep LVGL waiting for the async completion request instead of
+             * repeatedly dispatching while the only temporary RL is busy. */
+            return 0;
+        }
+    }
+
+    lv_draw_task_t *t = offscreen ? offscreen_get_next_task(layer, draw_unit) :
+                       lv_draw_get_next_available_task(layer, NULL, DRAW_UNIT_ID_EPIC);
 
     if (t == NULL)
+    {
+        /* Submit when this batch is drained or another unit/dependency needs
+         * its result. QUEUED tasks keep the snapshot alive until completion.
+         */
+        if (offscreen && render_list_ctx.layer.owner == layer)
+            render_list_flush_layer();
+        if (offscreen && offscreen_layer_has_pending_work())
+            return 0;
         return LV_DRAW_UNIT_IDLE;
+    }
 
     if (draw_epic_unit->task_act)
     {
@@ -930,10 +1041,18 @@ static int32_t dispatch(lv_draw_unit_t *draw_unit, lv_layer_t *layer)
         }
     }
 
-    bool is_sub_layer = (layer && layer->parent != NULL);
+    /* Snapshot roots have no parent, but own a real destination buffer.
+     * They do not pass through the display's render_start/flush callbacks. */
+    bool is_sub_layer = (layer && layer->parent != NULL) || offscreen;
 
     if (is_sub_layer)
     {
+        if (render_list_ctx.layer.active.rl && render_list_ctx.layer.owner != layer)
+        {
+            render_list_flush_layer();
+            if (offscreen && offscreen_layer_has_pending_work())
+                return 0;
+        }
 
         if (render_list_ctx.layer.active.rl == NULL)
         {
@@ -970,7 +1089,7 @@ static int32_t dispatch(lv_draw_unit_t *draw_unit, lv_layer_t *layer)
     {
         if (render_list_ctx.layer.active.rl != NULL)
         {
-            render_list_flush_layer(NULL, true);
+            render_list_flush_layer();
         }
 
         void *buf = lv_draw_layer_alloc_buf(layer);

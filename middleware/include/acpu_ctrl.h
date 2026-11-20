@@ -27,6 +27,8 @@ extern "C" {
 #define ACPU_ERR_OK         0
 #define ACPU_ERR_ASSERT     0xff
 
+#define ACPU_MAX_MAILBOX    3
+
 typedef struct
 {
     void *st;
@@ -109,8 +111,7 @@ typedef struct
 #define ACPU_TASK_webrtc_close           (18)
 #define ACPU_TASK_webrtc_uplink          (19)
 #define ACPU_TASK_webrtc_downlink        (20)
-#define ACPU_TASK_webrtc_farput          (21)
-#define ACPU_TASK_MP3Decode              (22)
+#define ACPU_TASK_MP3Decode              (21)
 
 
 /** HCPU task name */

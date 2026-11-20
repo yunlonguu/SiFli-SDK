@@ -31,6 +31,8 @@
 #include "../../stdlib/lv_string.h"
 #include "../../core/lv_global.h"
 
+static void img_draw_transform(lv_draw_task_t *task);
+
 /*********************
  *      DEFINES
  *********************/
@@ -174,6 +176,12 @@ void lv_draw_epic_layer(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *dr
 void lv_draw_epic_img(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *draw_dsc,
                       const lv_area_t *coords)
 {
+    if (draw_dsc->src == NULL && draw_dsc->base.user_data != NULL)
+    {
+        img_draw_transform(draw_task);
+        return;
+    }
+
     if (draw_dsc->blend_mode != LV_BLEND_MODE_NORMAL)
     {
         LV_LOG_WARN("EPIC: Skip image draw in render-list mode for non-normal blend mode %d", draw_dsc->blend_mode);
@@ -190,6 +198,99 @@ void lv_draw_epic_img(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *draw
     }
 }
 
+rt_err_t lv_draw_epic_transform(lv_layer_t *target, const EPIC_LayerConfigTypeDef *layer,
+                              const EPIC_LayerConfigTypeDef *mask, const lv_area_t *clip)
+{
+    lv_area_t area;
+    if (!lv_area_intersect(&area, clip, &target->_clip_area)) return RT_EOK;
+
+    lv_draw_epic_transform_dsc_t *dsc = lv_malloc_zeroed(sizeof(*dsc));
+    if (dsc == NULL) return -RT_ENOMEM;
+    dsc->layer = *layer;
+    HAL_EPIC_LayerConfigInit(&dsc->mask);
+    if (mask) dsc->mask = *mask;
+#ifdef EPIC_SUPPORT_TRANS_MATRIX
+    if (layer->transform_cfg.trans_matrix)
+    {
+        dsc->matrix = *layer->transform_cfg.trans_matrix;
+        dsc->layer.transform_cfg.trans_matrix = &dsc->matrix;
+    }
+#endif
+
+    lv_draw_task_t *task = lv_draw_add_task(target, &area, LV_DRAW_TASK_TYPE_IMAGE);
+    lv_draw_image_dsc_t *image_dsc = lv_draw_task_get_image_dsc(task);
+    lv_draw_image_dsc_init(image_dsc);
+    image_dsc->base.user_data = dsc;
+    lv_draw_finalize_task_creation(target, task);
+    return RT_EOK;
+}
+
+static void img_draw_transform(lv_draw_task_t *task)
+{
+    lv_draw_image_dsc_t *image_dsc = task->draw_dsc;
+    lv_draw_epic_transform_dsc_t *dsc = image_dsc->base.user_data;
+    image_dsc->base.user_data = NULL;
+    drv_epic_render_buf *render_buf = render_list_get_current_buf();
+    if (render_buf == NULL) goto done;
+
+    int32_t offset_x, offset_y;
+    lv_epic_get_coord_offset(task, &offset_x, &offset_y, NULL);
+    lv_area_t draw_area;
+    lv_epic_area_to_render_coords(&task->area, offset_x, offset_y, &draw_area);
+    if (!lv_epic_clip_area_by_render_buf(&draw_area, render_buf)) goto done;
+
+    EPIC_LayerConfigTypeDef layer = dsc->layer;
+
+#ifdef EPIC_SUPPORT_TRANS_MATRIX
+    sifli_matrix_3x3_t *matrix = NULL;
+    if (layer.transform_cfg.trans_matrix)
+    {
+        matrix = lv_malloc(sizeof(*matrix));
+        LV_ASSERT_MALLOC(matrix);
+        if (matrix == NULL) goto done;
+        /* Move the projected destination from display to layer-buffer space. */
+        sifli_matrix_3x3_t translation;
+        sifli_identity_3x3(&translation);
+        sifli_mat_translate_3x3(-offset_x, -offset_y, &translation);
+        sifli_mat_multiply_3x3(&translation, layer.transform_cfg.trans_matrix, matrix);
+        if (!lv_draw_epic_retain_transform(matrix))
+        {
+            lv_free(matrix);
+            LV_ASSERT(0);
+            goto done;
+        }
+    }
+    else
+#endif
+    {
+        layer.x_offset -= offset_x;
+        layer.y_offset -= offset_y;
+    }
+
+    drv_epic_operation *op = drv_epic_alloc_op(render_buf);
+    LV_ASSERT_NULL(op);
+    if (op == NULL) goto done;
+
+    op->op = DRV_EPIC_DRAW_IMAGE;
+    op->clip_area.x0 = draw_area.x1;
+    op->clip_area.y0 = draw_area.y1;
+    op->clip_area.x1 = draw_area.x2;
+    op->clip_area.y1 = draw_area.y2;
+    op->mask = dsc->mask;
+    op->mask.x_offset -= offset_x;
+    op->mask.y_offset -= offset_y;
+    op->desc.blend.layer = layer;
+#ifdef EPIC_SUPPORT_TRANS_MATRIX
+    op->desc.blend.layer.transform_cfg.trans_matrix = matrix;
+#endif
+    op->desc.blend.use_dest_as_bg = EPIC_BLEND_MODE_NORMAL;
+    rt_err_t err = drv_epic_commit_op(op);
+    RT_ASSERT(err == RT_EOK);
+
+done:
+    lv_free(dsc);
+}
+
 /**********************
  *   STATIC FUNCTIONS
  **********************/
@@ -203,7 +304,15 @@ static void img_draw_core(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *
     lv_color_format_t cf = decoded->header.cf;
     uint32_t img_total_width;
 
-    if (decoded->header.flags & LV_IMAGE_FLAGS_EZIP)
+#ifndef EPIC_SUPPORT_JPEGD
+    if (decoded->header.flags & LV_IMAGE_FLAGS_JPEG)
+    {
+        LV_LOG_WARN("EPIC JPEG input is not supported on this chip\n");
+        return;
+    }
+#endif
+
+    if (decoded->header.flags & (LV_IMAGE_FLAGS_EZIP | LV_IMAGE_FLAGS_JPEG))
         img_total_width = decoded->header.w;
     else
         img_total_width = decoded->header.stride / lv_color_format_get_size(cf);
@@ -227,6 +336,19 @@ static void img_draw_core(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *
         if (!lv_epic_clip_area_by_render_buf(&op_clip_area, render_buf)) 
         {
             return;
+        }
+
+        /* Retain decoder-owned EZIP/JPEG input until the render list is done.
+         * The 58X decoder retains its RGB draw buffer in decoder_close(). */
+        if ((decoded->header.flags & (LV_IMAGE_FLAGS_EZIP | LV_IMAGE_FLAGS_JPEG)) &&
+            decoder_dsc->user_data != NULL)
+        {
+            if (!lv_draw_epic_retain_image_data(decoder_dsc->user_data))
+            {
+                LV_LOG_ERROR("EPIC: Failed to retain JPEG file data\n");
+                return;
+            }
+            ((lv_image_decoder_dsc_t *)decoder_dsc)->user_data = NULL;
         }
 
         drv_epic_operation *op = drv_epic_alloc_op(render_buf);
@@ -253,12 +375,19 @@ static void img_draw_core(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *
         op->desc.blend.layer.x_offset = img_coords->x1 - coord_offset_x;
         op->desc.blend.layer.y_offset = img_coords->y1 - coord_offset_y;
 
+#ifdef EPIC_SUPPORT_JPEGD
+        if (decoded->header.flags & LV_IMAGE_FLAGS_JPEG)
+            op->desc.blend.layer.color_mode = EPIC_INPUT_JPEG;
+        else if (decoded->header.flags & LV_IMAGE_FLAGS_USER1)
+#else
         if (decoded->header.flags & LV_IMAGE_FLAGS_USER1)
+#endif
             op->desc.blend.layer.color_mode = EPIC_INPUT_EZIP;
         else
             op->desc.blend.layer.color_mode = lv_img_2_epic_cf(cf);
 
         op->desc.blend.layer.data = (uint8_t *)src_buf;
+        op->desc.blend.layer.data_size = decoded->data_size;
 
         op->desc.blend.layer.width = lv_area_get_width(img_coords);
         op->desc.blend.layer.height = lv_area_get_height(img_coords);
@@ -285,7 +414,7 @@ static void img_draw_core(lv_draw_task_t *draw_task, const lv_draw_image_dsc_t *
                             && (op->desc.blend.layer.transform_cfg.scale_y == EPIC_INPUT_SCALE_NONE);
         bool can_overwrite_dst = no_transform
                                  && (draw_dsc->opa >= LV_OPA_MAX)
-                                 && !(decoded->header.flags & LV_IMAGE_FLAGS_USER1)
+                                 && !(decoded->header.flags & (LV_IMAGE_FLAGS_USER1 | LV_IMAGE_FLAGS_JPEG))
                                  && img_cf_can_overwrite_dst(cf);
         op->desc.blend.use_dest_as_bg = can_overwrite_dst ? EPIC_BLEND_MODE_OVERWRITE : EPIC_BLEND_MODE_NORMAL;
 

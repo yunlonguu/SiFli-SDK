@@ -19,6 +19,13 @@
 
 #include "../../misc/lv_fs_private.h"
 #include <string.h>
+#include "app_mem.h"
+#include "drv_epic.h"
+#if defined(LVSF_IMG_DECODER_ALLOC_PSRAM) || defined(CONFIG_LVSF_IMG_DECODER_ALLOC_PSRAM)
+    #define DECODER_IMAGE_CACHE_POOL IMAGE_CACHE_PSRAM
+#else
+    #define DECODER_IMAGE_CACHE_POOL IMAGE_CACHE_SRAM
+#endif
 #ifdef RT_USING_DFS
     #include <dfs_posix.h>
 #endif
@@ -181,7 +188,7 @@ static lv_result_t decoder_open(lv_image_decoder_t *decoder, lv_image_decoder_ds
         p_decoded->data_size = file_size - sizeof(lv_image_header_t);
 
 #if defined(RT_USING_MTD_NAND)
-        p_decoded->data = lv_malloc(p_decoded->data_size);
+        p_decoded->data = app_cache_alloc(p_decoded->data_size, DECODER_IMAGE_CACHE_POOL);
         if (p_decoded->data == NULL)
         {
             LV_LOG_WARN("Memory allocation failed for image data\n");
@@ -197,7 +204,7 @@ static lv_result_t decoder_open(lv_image_decoder_t *decoder, lv_image_decoder_ds
         if (LV_FS_RES_OK != res || p_decoded->data_size != br)
         {
             LV_LOG_WARN("Read bytes mismatch: %u/%u\n", br, p_decoded->data_size);
-            lv_free(p_decoded->data);
+            app_cache_free(p_decoded->data);
             lv_free(p_decoded);
             lv_fs_close(f);
             lv_free(f);
@@ -240,7 +247,7 @@ static lv_result_t decoder_open(lv_image_decoder_t *decoder, lv_image_decoder_ds
         /* Not MTD device (e.g., SD card) or ioctl failed, must read into memory */
         if (!use_direct_mapping)
         {
-            p_decoded->data = lv_malloc(p_decoded->data_size);
+            p_decoded->data = app_cache_alloc(p_decoded->data_size, DECODER_IMAGE_CACHE_POOL);
             if (p_decoded->data == NULL)
             {
                 LV_LOG_WARN("Memory allocation failed for image data\n");
@@ -256,7 +263,7 @@ static lv_result_t decoder_open(lv_image_decoder_t *decoder, lv_image_decoder_ds
             if (LV_FS_RES_OK != res || p_decoded->data_size != br)
             {
                 LV_LOG_WARN("Read bytes mismatch: %u/%u\n", br, p_decoded->data_size);
-                lv_free(p_decoded->data);
+                app_cache_free(p_decoded->data);
                 lv_free(p_decoded);
                 lv_fs_close(f);
                 lv_free(f);
@@ -295,7 +302,12 @@ static void decoder_close(lv_image_decoder_t *decoder, lv_image_decoder_dsc_t *d
     LV_UNUSED(decoder);
     if (dsc->user_data)
     {
-        lv_free(dsc->user_data);
+#ifndef DRV_EPIC_NEW_API
+        /* Wait before freeing file data still read by the single-step renderer. */
+        rt_err_t ret = drv_gpu_check_done(10000);
+        LV_ASSERT(RT_EOK == ret);
+#endif
+        app_cache_free(dsc->user_data);
         dsc->user_data = NULL;
     }
 

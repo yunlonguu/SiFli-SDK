@@ -23,6 +23,8 @@
 #include "bf0_mbox_common.h"
 static struct rt_semaphore acpu_task_done_sema;
 static struct rt_mutex s_ha_ipc_tx_mutex;
+static struct rt_semaphore acpu_task_run_sema;
+
 
 static int acpu_ctrl_tx_lock_init(void)
 {
@@ -39,6 +41,8 @@ static size_t ha_ipc_queue_write(const void *buffer, size_t size, uint32_t timeo
 {
     rt_err_t err;
     size_t wr_size;
+
+    SCB_CleanDCache();
 
     err = rt_mutex_take(&s_ha_ipc_tx_mutex, RT_WAITING_FOREVER);
     if (RT_EOK != err)
@@ -60,11 +64,8 @@ static size_t ha_ipc_queue_write(const void *buffer, size_t size, uint32_t timeo
 }
 
 #ifdef ACPU_CALLER_ENABLED
+
 static rt_mailbox_t g_call_mb;
-extern void *audio_mem_malloc(uint32_t size);
-extern void audio_mem_free(void *ptr);
-extern void *audio_mem_calloc(uint32_t count, uint32_t size);
-extern void *audio_mem_realloc(void *mem_address, unsigned int newsize);
 
 /*
     notice: can not call acpu function in acpu_caller_entry()
@@ -80,7 +81,7 @@ static void acpu_caller_entry(void *parameter)
             if (p_msg->task_id == HCPU_TASK_MALLOC)
             {
                 size_t size = (size_t)p_msg->task_param;
-                void *p = malloc(size);
+                void *p = rt_malloc(size);
                 if (!p)
                 {
                     rt_kprintf("malloc %d\n", size);
@@ -92,7 +93,7 @@ static void acpu_caller_entry(void *parameter)
             {
                 void *addr = p_msg->task_param;
                 uint32_t size = p_msg->task_param_size;
-                void *p = realloc(addr, size);
+                void *p = rt_realloc(addr, size);
                 if (!p)
                 {
                     rt_kprintf("realloc %d\n", size);
@@ -102,21 +103,21 @@ static void acpu_caller_entry(void *parameter)
             }
             else if (p_msg->task_id == HCPU_TASK_FREE)
             {
-                free((void *)p_msg->task_param);
+                rt_free((void *)p_msg->task_param);
                 p_msg->ret_value = 0;
             }
             else if (p_msg->task_id == HCPU_TASK_PRINTF)
             {
-                rt_kprintf("%s", (char *)p_msg->task_param);
+                rt_kprintf("%s\n", (char *)p_msg->task_param);
             }
             else
             {
+                rt_kprintf("acpu call hcpu unknow %d\n", p_msg->task_id);
                 RT_ASSERT(0);
             }
 
             p_msg->is_rsp = 1;
             p_msg->ret_error_code = 0;
-
             size_t wr_size = ha_ipc_queue_write(&p_msg, sizeof(acpu_ctrl_ipc_msg_t *), 1000);
             RT_ASSERT(wr_size == sizeof(acpu_ctrl_ipc_msg_t *));
 
@@ -156,6 +157,8 @@ static int32_t queue_rx_ind(ipc_queue_handle_t handle, size_t size)
             return -RT_ERROR;
         }
 
+        SCB_InvalidateDCache();
+
         if (p_msg->is_rsp) // Handle the response messages(Started by HCPU)
         {
             if (p_msg->ret_error_code == ACPU_ERR_OK)
@@ -194,15 +197,26 @@ static int32_t queue_rx_ind(ipc_queue_handle_t handle, size_t size)
     return 0;
 }
 
+static inline void run_request()
+{
+    rt_err_t ret = rt_sem_take(&acpu_task_run_sema, RT_WAITING_FOREVER);
+    RT_ASSERT(ret == RT_EOK);
+}
+
+static inline void run_release()
+{
+    rt_sem_release(&acpu_task_run_sema);
+}
+
 RT_WEAK void *acpu_run_task(uint8_t task_name, void *param, uint32_t param_size, uint8_t *error_code)
 {
     rt_err_t err;
 
-    SCB_CleanInvalidateDCache();
-
 #ifdef RT_USING_PM
     rt_pm_request(PM_SLEEP_MODE_IDLE);
 #endif /* RT_USING_PM */
+
+    run_request();
 
     //Create blocking semaphore
     char task_name_str[RT_NAME_MAX];
@@ -229,9 +243,12 @@ RT_WEAK void *acpu_run_task(uint8_t task_name, void *param, uint32_t param_size,
     RT_ASSERT(wr_size == msg_size);
 
 
-
     //Wait for task completion, and delete semaphore
     err = rt_sem_take(sem, rt_tick_from_millisecond(1000));
+    if (RT_EOK != err)
+    {
+        rt_kprintf("acpu run task %d timeout\n", task_name);
+    }
     RT_ASSERT(RT_EOK == err);
     rt_sem_delete(sem);
 
@@ -239,7 +256,6 @@ RT_WEAK void *acpu_run_task(uint8_t task_name, void *param, uint32_t param_size,
     RT_ASSERT(1 == msg.is_rsp);
     RT_ASSERT(task_name == msg.task_id);
 
-    // rt_kprintf("acpu error_code=%d\n", msg.ret_error_code);
     if (msg.ret_error_code == (uint8_t)ACPU_ERR_ASSERT)
     {
         rt_kprintf("acpu assert: %s\n", msg.ret_value);
@@ -249,6 +265,8 @@ RT_WEAK void *acpu_run_task(uint8_t task_name, void *param, uint32_t param_size,
     {
         *error_code = msg.ret_error_code;
     }
+
+    run_release();
 
 
 #ifdef RT_USING_PM
@@ -262,6 +280,9 @@ RT_WEAK int acpu_init(void)
 {
     rt_err_t err;
     int32_t r;
+
+    err = rt_sem_init(&acpu_task_run_sema, "h_call_a", ACPU_MAX_MAILBOX, RT_IPC_FLAG_FIFO);
+    RT_ASSERT(RT_EOK == err);
 
     ipc_queue_handle_t acpu_task_ntf_queue = sys_init_ha_ipc_queue(queue_rx_ind);
 
@@ -278,7 +299,7 @@ RT_WEAK int acpu_init(void)
     rt_thread_t tid = rt_thread_create("acpu",
                                        acpu_caller_entry,
                                        NULL,
-                                       1024,
+                                       1536,
                                        RT_THREAD_PRIORITY_HIGH,
                                        RT_THREAD_TICK_DEFAULT);
     rt_thread_startup(tid);
@@ -341,5 +362,12 @@ __ERR:
     return 0;
 }
 MSH_CMD_EXPORT(acpu, acpu control);
+
+__ROM_USED int acpu_mem(int argc, char **argv)
+{
+    acpu_run_task(ACPU_TASK_0, NULL, 0, NULL);
+    return 0;
+}
+MSH_CMD_EXPORT(acpu_mem, acpu mem);
 
 #endif /* SOC_BF0_HCPU */

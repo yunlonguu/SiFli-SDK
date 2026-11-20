@@ -33,6 +33,15 @@ extern "C" {
 
 typedef lv_layer_t lv_epic_layer_t;
 
+typedef struct
+{
+    EPIC_LayerConfigTypeDef layer;
+    EPIC_LayerConfigTypeDef mask;
+#ifdef EPIC_SUPPORT_TRANS_MATRIX
+    sifli_matrix_3x3_t matrix;
+#endif
+} lv_draw_epic_transform_dsc_t;
+
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
@@ -62,12 +71,21 @@ void lv_draw_epic_line(lv_draw_task_t *draw_task, const lv_draw_line_dsc_t *dsc)
 
 bool lv_draw_epic_retain_glyph_data(void *glyph_data);
 
+bool lv_draw_epic_retain_image_data(void *image_data);
+
+bool lv_draw_epic_retain_transform(sifli_matrix_3x3_t *matrix);
+
+/* Queue a private EPIC image task on the target LVGL layer. */
+rt_err_t lv_draw_epic_transform(lv_layer_t *target, const EPIC_LayerConfigTypeDef *layer,
+                              const EPIC_LayerConfigTypeDef *mask, const lv_area_t *clip);
+
 bool lv_draw_epic_retain_layer_draw_buf(lv_draw_buf_t *draw_buf);
 
 void lv_draw_epic_release_deferred_resources(void);
 
 void render_list_set_display_pixel_align(lv_display_t *disp, uint32_t pixel_align);
 drv_epic_render_buf *render_list_get_current_buf(void);
+bool render_list_is_offscreen_layer(const lv_layer_t *layer);
 
 int render_list_create_main_frame(lv_display_t *disp);
 int render_list_submit_main_frame(void);

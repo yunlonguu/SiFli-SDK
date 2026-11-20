@@ -815,6 +815,7 @@ class Kconfig(object):
       See the module docstring.
     """
     __slots__ = (
+        "_configs_loaded",
         "_encoding",
         "_functions",
         "_set_match",
@@ -983,6 +984,11 @@ class Kconfig(object):
         self.warn_unsatisfied_deps = True
 
         self.warnings = []
+
+        # True once load_config() has run successfully, or has determined that
+        # the default symbol values are final. Consumed by
+        # check_undefined_configdefaults(), which needs final symbol values.
+        self._configs_loaded = False
 
         # symbol definitions needs to be excluded when saving as minimal conf
         self.excluding_sym = []
@@ -1233,6 +1239,7 @@ class Kconfig(object):
                not exists(join(self.srctree, filename)):
                 defconfig = self.defconfig_filename
                 if defconfig is None:
+                    self._configs_loaded = True
                     return "Using default symbol values (no '{}')" \
                            .format(filename)
 
@@ -1256,6 +1263,7 @@ class Kconfig(object):
         finally:
             self._warn_assign_no_prompt = True
 
+        self._configs_loaded = True
         return ("Loaded" if replace else "Merged") + msg
 
     def _load_config(self, filename, replace):
@@ -3855,8 +3863,13 @@ class Kconfig(object):
                                        sym.name_and_loc))
 
             else:  # UNKNOWN
-                self._warn("{} defined without a type"
-                           .format(sym.name_and_loc))
+                # Symbols that only have configdefault nodes are validated
+                # after the configuration fragments are loaded, by
+                # check_undefined_configdefaults(). Their conditions may be
+                # inactive, in which case the configdefault is inert.
+                if not all(node.is_configdefault for node in sym.nodes):
+                    self._warn("{} defined without a type"
+                               .format(sym.name_and_loc))
 
 
             if sym.ranges:
@@ -3877,6 +3890,86 @@ class Kconfig(object):
                                                low.name_and_loc,
                                                high.name_and_loc))
 
+    def check_undefined_configdefaults(self):
+        """
+        Checks for configdefault statements and choice defaults that are
+        active in the currently loaded configuration but whose target is not
+        defined by any 'config'/'menuconfig' statement (or, for a choice
+        default, is not a member of the choice).
+
+        configdefaults whose condition evaluates to n are inert, just like
+        'default ... if <false>', and do not generate warnings. The same
+        applies to a named choice reopened in an always-sourced file to set
+        its default: while it has no members and its effective dependency is
+        inactive (the module providing the choice was not sourced), the stub
+        is inert. A choice that does have members is checked even when its
+        dependency is inactive.
+
+        Must be called after Kconfig.load_config(). Generates at most one
+        warning per symbol per call, pointing at the first active
+        configdefault. Every consumer that displays or enforces Kconfig
+        warnings must call this: the parse-time "defined without a type"
+        warning is suppressed for symbols that only have configdefault nodes,
+        and the choice type/prompt/default sanity checks are deferred to this
+        method.
+
+        Conditions follow normal Kconfig semantics, so a misspelled guard
+        symbol evaluates to n and makes the block inert. Warnings are subject
+        to Kconfig.warn; callers that disabled warnings must re-enable them
+        (see _run_deferred_checks() in menuconfig.py). Tools that do not call
+        this method (e.g. lint.py, which never loads a configuration) do not
+        see these diagnostics.
+        """
+        if not self._configs_loaded:
+            raise KconfigError(
+                "check_undefined_configdefaults() must be called after "
+                "load_config()")
+
+        for sym in self.unique_defined_syms:
+            if not sym.configdefaults:
+                continue
+
+            if any(not node.is_configdefault for node in sym.nodes):
+                # Defined by a real 'config'/'menuconfig' statement. Any
+                # missing type is diagnosed by _check_sym_sanity().
+                continue
+
+            active = [(node, cond)
+                      for node in sym.nodes if node.is_configdefault
+                      for _, cond in node.defaults if expr_value(cond)]
+            if not active:
+                continue
+
+            node, cond = active[0]
+            self._warn(
+                "configdefault for {} is active (condition: {}), but the "
+                "symbol has no 'config' or 'menuconfig' definition"
+                .format(sym.name, expr_str(cond)),
+                node.filename, node.linenr)
+
+        for choice in self.unique_choices:
+            # An empty choice whose effective dependency is inactive is the
+            # stub left behind when the Kconfig providing its members was not
+            # sourced. It is inert; a choice that does have members is checked
+            # even when disabled, matching the parse-time behavior.
+            if not choice.syms and not expr_value(choice.direct_dep):
+                continue
+
+            if choice.orig_type not in _BOOL_TRISTATE:
+                self._warn("{} defined with type {}"
+                           .format(choice.name_and_loc,
+                                   TYPE_TO_STR[choice.orig_type]))
+
+            if not any(node.prompt for node in choice.nodes):
+                self._warn(choice.name_and_loc + " defined without a prompt")
+
+            for default, cond in choice.defaults:
+                if expr_value(cond) and default.choice is not choice:
+                    self._warn("the default selection {} of {} is not "
+                               "contained in the choice"
+                               .format(default.name_and_loc,
+                                       choice.name_and_loc))
+
     def _check_choice_sanity(self):
         # Checks various choice properties that are handiest to check after
         # parsing. Only generates errors and warnings.
@@ -3893,28 +3986,11 @@ class Kconfig(object):
             self._warn(msg)
 
         for choice in self.unique_choices:
-            if choice.orig_type not in _BOOL_TRISTATE:
-                self._warn("{} defined with type {}"
-                           .format(choice.name_and_loc,
-                                   TYPE_TO_STR[choice.orig_type]))
-
-            for node in choice.nodes:
-                if node.prompt:
-                    break
-            else:
-                self._warn(choice.name_and_loc + " defined without a prompt")
-
             for default, _ in choice.defaults:
                 if default.__class__ is not Symbol:
                     raise KconfigError(
                         "{} has a malformed default {}"
                         .format(choice.name_and_loc, expr_str(default)))
-
-                if default.choice is not choice:
-                    self._warn("the default selection {} of {} is not "
-                               "contained in the choice"
-                               .format(default.name_and_loc,
-                                       choice.name_and_loc))
 
             for sym in choice.syms:
                 if sym.defaults:

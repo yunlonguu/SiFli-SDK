@@ -62,6 +62,7 @@ import errno
 import os
 import re
 import sys
+import textwrap
 
 _PY2 = sys.version_info[0] < 3
 
@@ -102,7 +103,18 @@ an item will jump to it. Item values can be toggled directly within the dialog.\
 
 
 def _main():
-    menuconfig(standard_kconfig(__doc__))
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__)
+    parser.add_argument(
+        "kconfig",
+        metavar="KCONFIG",
+        nargs="?",
+        default="Kconfig",
+        help="Top-level Kconfig file (default: Kconfig)")
+    menuconfig(standard_kconfig(parser.parse_args().kconfig))
 
 
 # Global variables used below:
@@ -180,13 +192,25 @@ def menuconfig(kconf):
 
     _create_id_to_node()
 
-    _create_ui()
-
     # Filename to save configuration to
     _conf_filename = standard_config_filename()
 
     # Load existing configuration and check if it's outdated
-    _set_conf_changed(_load_config())
+    conf_changed = _load_config()
+
+    # Refuse to open the GUI if the loaded Kconfig tree has unresolved
+    # configdefault targets or invalid choices. Such a tree cannot build, and
+    # letting the user edit it would only hide the problem until the next
+    # build.
+    errors = _run_deferred_checks()
+    if errors:
+        sys.exit("\n" + "\n\n".join(errors) + "\n\n"
+                 "error: Kconfig validation failed; fix the Kconfig files "
+                 "before running guiconfig\n")
+
+    _create_ui()
+
+    _set_conf_changed(conf_changed)
 
     # Filename to save minimal configuration to
     _minconf_filename = "defconfig"
@@ -1343,10 +1367,56 @@ def _range_info(sym):
     return None
 
 
+def _run_deferred_checks():
+    # Runs the deferred Kconfig checks (configdefault and choice) and returns
+    # the warnings they generated. stderr is not useful while the GUI is up,
+    # so collect them for display.
+    old_warn = _kconf.warn
+    old_warn_to_stderr = _kconf.warn_to_stderr
+    _kconf.warn = True
+    _kconf.warn_to_stderr = False
+    try:
+        before = len(_kconf.warnings)
+        _kconf.check_undefined_configdefaults()
+        return _kconf.warnings[before:]
+    finally:
+        _kconf.warn = old_warn
+        _kconf.warn_to_stderr = old_warn_to_stderr
+
+
+def _deferred_error_text(warnings):
+    # Formats the deferred-check warnings for a message box, wrapping long
+    # lines (the warnings contain long paths).
+    text = "The Kconfig tree has errors:\n\n" + "\n\n".join(warnings)
+    return "\n".join(textwrap.fill(line, 70) if line else line
+                     for line in text.split("\n"))
+
+
+def _write_checked(write_fn, filename):
+    # Wraps a configuration writer so that a configuration which fails the
+    # deferred Kconfig checks is never saved.
+    warnings = _run_deferred_checks()
+    if warnings:
+        messagebox.showerror(
+            "Error",
+            "Cannot save the configuration:\n\n" +
+            _deferred_error_text(warnings))
+        return None
+    return write_fn(filename)
+
+
+def _write_config_checked(filename):
+    return _write_checked(_kconf.write_config, filename)
+
+
+def _write_min_config_checked(filename):
+    return _write_checked(_kconf.write_min_config, filename)
+
+
 def _save(_=None):
     # Tries to save the configuration
 
-    if _try_save(_kconf.write_config, _conf_filename, "configuration"):
+    if _try_save(_write_config_checked, _conf_filename, "configuration"):
         _set_conf_changed(False)
 
     _tree.focus_set()
@@ -1368,7 +1438,7 @@ def _save_as():
         if not filename:
             break
 
-        if _try_save(_kconf.write_config, filename, "configuration"):
+        if _try_save(_write_config_checked, filename, "configuration"):
             _conf_filename = filename
             break
 
@@ -1392,7 +1462,7 @@ def _save_minimal():
         if not filename:
             break
 
-        if _try_save(_kconf.write_min_config, filename,
+        if _try_save(_write_min_config_checked, filename,
                      "minimal configuration"):
 
             _minconf_filename = filename
@@ -1681,7 +1751,7 @@ def _on_quit(_=None):
             _quit("Configuration ({}) was not saved".format(_conf_filename))
             return
 
-        if _try_save(_kconf.write_config, _conf_filename, "configuration"):
+        if _try_save(_write_config_checked, _conf_filename, "configuration"):
             # _try_save() already prints the "Configuration saved to ..."
             # message
             _quit()
@@ -1710,6 +1780,9 @@ def _try_save(save_fn, filename, description):
     try:
         # save_fn() returns a message to print
         msg = save_fn(filename)
+        if not msg:
+            # The save function refused to write the configuration
+            return False
         _set_status(msg)
         print(msg)
         return True
